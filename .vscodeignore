@@ -1,0 +1,7 @@
+.vscode/**
+informações da liguagem/**
+scripts/**
+examples/**
+**/.git/**
+*.vsix
+node_modules/**

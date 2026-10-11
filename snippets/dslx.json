@@ -1,0 +1,41 @@
+{
+	"elemento completo": {
+		"prefix": "elem",
+		"body": [
+			"<${1:tag} ${2:props}>",
+			"\t${3:children}",
+			"</${1:tag}>"
+		],
+		"description": "Elemento DSLX completo (full_element)"
+	},
+	"elemento self-close": {
+		"prefix": "elemsc",
+		"body": ["<${1:tag} ${2:props}/>$0"],
+		"description": "Elemento DSLX self-close"
+	},
+	"propriedade string": {
+		"prefix": "prop",
+		"body": ["${1:nome}=\"${2:valor}\"$0"],
+		"description": "Prop com valor string"
+	},
+	"propriedade expressão": {
+		"prefix": "propexpr",
+		"body": ["${1:nome}={${2:expressao}}$0"],
+		"description": "Prop com expressão Lua"
+	},
+	"children expressão": {
+		"prefix": "child",
+		"body": ["{${1:expressao}}$0"],
+		"description": "Children como expressão Lua"
+	},
+	"função componente": {
+		"prefix": "comp",
+		"body": [
+			"local function ${1:tag}(el)",
+			"\t-- el.name, el.props.${2:prop}, el.childrens",
+			"\t${3:return el.childrens[1]}",
+			"end"
+		],
+		"description": "Função componente DSLX (recebe a tabela do elemento)"
+	}
+}

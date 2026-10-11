@@ -1,0 +1,237 @@
+{
+	"name": "dslx",
+	"displayName": "DSLX — Davi System Lua-XML",
+	"description": "Suporte à linguagem DSLX (Lua + XML estilo JSX): highlight, snippets, diagnóstico de erros, lua-language-server, compilação, execução e debugger.",
+	"version": "0.2.0",
+	"publisher": "pessoa736",
+	"license": "MIT",
+	"icon": "./icon.png",
+	"engines": {
+		"vscode": "^1.75.0"
+	},
+	"categories": [
+		"Programming Languages",
+		"Snippets",
+		"Debuggers"
+	],
+	"keywords": [
+		"dslx",
+		"lua",
+		"xml",
+		"jsx",
+		"debug"
+	],
+	"badges": [
+		{
+			"url": "https://img.shields.io/luarocks/v/pessoa736/daviluaxml",
+			"href": "https://luarocks.org/modules/pessoa736/daviluaxml",
+			"description": "LuaRocks"
+		}
+	],
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/pessoa736/dslx-vscode-extension"
+	},
+	"main": "./src/extension.js",
+	"activationEvents": [
+		"onLanguage:dslx"
+	],
+	"contributes": {
+		"languages": [
+			{
+				"id": "dslx",
+				"aliases": [
+					"DSLX",
+					"dslx",
+					"Davi System Lua-XML"
+				],
+				"extensions": [
+					".dslx"
+				],
+				"configuration": "./language-configuration.json",
+				"icon": {
+					"light": "./icons/dslx-light.png",
+					"dark": "./icons/dslx-dark.png"
+				}
+			}
+		],
+		"grammars": [
+			{
+				"language": "dslx",
+				"scopeName": "source.dslx",
+				"path": "./syntaxes/dslx.tmLanguage.json"
+			}
+		],
+		"snippets": [
+			{
+				"language": "dslx",
+				"path": "./snippets/dslx.json"
+			}
+		],
+		"commands": [
+			{
+				"command": "dslx.compile",
+				"title": "Compilar para Lua",
+				"category": "DSLX",
+				"icon": "$(file-code)"
+			},
+			{
+				"command": "dslx.run",
+				"title": "Executar arquivo",
+				"category": "DSLX",
+				"icon": "$(play)"
+			},
+			{
+				"command": "dslx.analyze",
+				"title": "Analisar arquivo (parser + lua-language-server)",
+				"category": "DSLX",
+				"icon": "$(search)"
+			},
+			{
+				"command": "dslx.env",
+				"title": "Mostrar ambiente (Lua, DSLX, LPeg, variáveis)",
+				"category": "DSLX",
+				"icon": "$(info)"
+			}
+		],
+		"menus": {
+			"commandPalette": [
+				{
+					"command": "dslx.compile",
+					"when": "editorLangId == dslx"
+				},
+				{
+					"command": "dslx.run",
+					"when": "editorLangId == dslx"
+				},
+				{
+					"command": "dslx.analyze",
+					"when": "editorLangId == dslx"
+				},
+				{
+					"command": "dslx.env",
+					"when": "editorLangId == dslx"
+				}
+			],
+			"explorer/context": [
+				{
+					"command": "dslx.run",
+					"when": "resourceExtname == .dslx",
+					"group": "navigation@2"
+				},
+				{
+					"command": "dslx.compile",
+					"when": "resourceExtname == .dslx",
+					"group": "navigation@3"
+				}
+			]
+		},
+		"breakpoints": [
+			{
+				"language": "dslx"
+			}
+		],
+		"debuggers": [
+			{
+				"type": "dslx",
+				"label": "DSLX",
+				"languages": [
+					"dslx"
+				],
+				"program": "./src/dap/adapter.js",
+				"runtime": "node",
+				"configurationAttributes": {
+					"launch": {
+						"required": [
+							"program"
+						],
+						"properties": {
+							"program": {
+								"type": "string",
+								"description": "Arquivo .dslx a depurar (é compilado pra .lua na hora e as linhas são mapeadas de volta)."
+							},
+							"args": {
+								"type": "array",
+								"description": "Argumentos repassados ao programa.",
+								"items": {
+									"type": "string"
+								}
+							},
+							"stopOnEntry": {
+								"type": "boolean",
+								"description": "Parar na primeira linha.",
+								"default": false
+							},
+							"interpreter": {
+								"type": "string",
+								"description": "Interpretador Lua (sobrepõe dslx.luaInterpreter)."
+							},
+							"env": {
+								"type": "object",
+								"description": "Variáveis de ambiente extras pro processo depurado."
+							}
+						}
+					}
+				},
+				"initialConfigurations": [
+					{
+						"name": "DSLX: depurar arquivo atual",
+						"type": "dslx",
+						"request": "launch",
+						"program": "${file}",
+						"stopOnEntry": false
+					}
+				],
+				"configurationSnippets": [
+					{
+						"label": "DSLX: depurar arquivo",
+						"description": "Compila o .dslx pra Lua e depura com breakpoints e stepping.",
+						"body": {
+							"name": "DSLX: depurar ${1:arquivo}",
+							"type": "dslx",
+							"request": "launch",
+							"program": "^\"\\${2:${file}}\"",
+							"stopOnEntry": false
+						}
+					}
+				]
+			}
+		],
+		"configuration": {
+			"title": "DSLX",
+			"properties": {
+				"dslx.luaInterpreter": {
+					"type": "string",
+					"default": "lua",
+					"description": "Interpretador Lua (5.4+) usado pra compilar, executar e depurar .dslx. Se ele não tiver LPeg, a extensão usa o LuLPeg embutido. Comando no PATH ou caminho absoluto."
+				},
+				"dslx.env": {
+					"type": "object",
+					"default": {},
+					"description": "Variáveis de ambiente extras injetadas em todo processo Lua da extensão (compile/run/analyze/debug). Ex.: { \"LUA_PATH\": \"./?.lua\" }.",
+					"additionalProperties": {
+						"type": "string"
+					}
+				},
+				"dslx.analysis.enable": {
+					"type": "boolean",
+					"default": true,
+					"description": "Análise automática de erros do .dslx (parse + compilação) ao digitar e ao salvar."
+				},
+				"dslx.analysis.useLuaLanguageServer": {
+					"type": "boolean",
+					"default": true,
+					"description": "Usar o lua-language-server (se instalado) pra analisar o .lua compilado e mapear os avisos de volta pro .dslx. Roda ao salvar e no comando de análise."
+				},
+				"dslx.analysis.luaLanguageServerPath": {
+					"type": "string",
+					"default": "lua-language-server",
+					"description": "Caminho do binário lua-language-server (comando no PATH ou caminho absoluto)."
+				}
+			}
+		}
+	},
+	"scripts": {
+		"package": "vsce package"
+	}
+}

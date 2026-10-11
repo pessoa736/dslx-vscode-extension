@@ -1,0 +1,71 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "DSLX",
+	"scopeName": "source.dslx",
+	"patterns": [
+		{ "match": "\\A#!.*", "name": "comment.line.shebang.dslx" },
+		{ "include": "#dslx-element" },
+		{ "include": "source.lua" }
+	],
+	"repository": {
+		"dslx-element": {
+			"name": "meta.tag.dslx",
+			"begin": "(?:(?<![\\w\"'\\)\\]]\\s)(?<![\\w\"'\\)\\]])|(?<=\\breturn\\s+))(<)(?!(?:const|close)\\b)([A-Za-z_][\\w.-]*)(?=(?:\\s+[\\w.-]+)*\\s*(?:=|/>|>))",
+			"beginCaptures": {
+				"1": { "name": "punctuation.definition.tag.begin.dslx" },
+				"2": { "name": "entity.name.tag.dslx" }
+			},
+			"end": "(/\\s*>)|(</)([\\w.-]*)(>)",
+			"endCaptures": {
+				"1": { "name": "punctuation.definition.tag.end.dslx" },
+				"2": { "name": "punctuation.definition.tag.begin.dslx" },
+				"3": { "name": "entity.name.tag.dslx" },
+				"4": { "name": "punctuation.definition.tag.end.dslx" }
+			},
+			"patterns": [
+				{ "include": "#dslx-tag-attributes" },
+				{ "include": "#dslx-tag-children" }
+			]
+		},
+		"dslx-tag-attributes": {
+			"patterns": [
+				{ "include": "#dslx-script" },
+				{ "match": "\"[^\"]*\"", "name": "string.quoted.double.dslx" },
+				{ "match": "'[^']*'", "name": "string.quoted.single.dslx" },
+				{ "match": "=", "name": "punctuation.separator.key-value.dslx" },
+				{ "match": "[\\w.-]+", "name": "entity.other.attribute-name.dslx" }
+			]
+		},
+		"dslx-tag-children": {
+			"begin": "(?<!/)(>)",
+			"beginCaptures": { "1": { "name": "punctuation.definition.tag.end.dslx" } },
+			"end": "(?=</)",
+			"contentName": "string.unquoted.dslx",
+			"patterns": [
+				{ "include": "#dslx-element" },
+				{ "include": "#dslx-script" }
+			]
+		},
+		"dslx-script": {
+			"begin": "\\{",
+			"end": "\\}",
+			"beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.dslx" } },
+			"endCaptures": { "0": { "name": "punctuation.section.embedded.end.dslx" } },
+			"contentName": "meta.embedded.expression.dslx",
+			"patterns": [
+				{ "include": "#dslx-script-braces" },
+				{ "include": "source.lua" }
+			]
+		},
+		"dslx-script-braces": {
+			"begin": "\\{",
+			"end": "\\}",
+			"beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.dslx" } },
+			"endCaptures": { "0": { "name": " " } },
+			"patterns": [
+				{ "include": "#dslx-script-braces" },
+				{ "include": "source.lua" }
+			]
+		}
+	}
+}
