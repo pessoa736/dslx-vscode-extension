@@ -2,6 +2,7 @@
 
 
 -- props: string, expressão e boolean; children: texto, expressão e elemento aninhado
+---@type fun(el: any):string
 local function card(el)
     local props <const> = el.props
     local partes = {}

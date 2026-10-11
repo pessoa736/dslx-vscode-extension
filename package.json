@@ -2,7 +2,7 @@
 	"name": "dslx",
 	"displayName": "DSLX — Davi System Lua-XML",
 	"description": "Suporte à linguagem DSLX (Lua + XML estilo JSX): highlight, snippets, diagnóstico de erros, lua-language-server, compilação, execução e debugger.",
-	"version": "0.6.1",
+	"version": "0.6.2",
 	"publisher": "pessoa736",
 	"license": "MIT",
 	"icon": "./icon.png",
@@ -92,6 +92,12 @@
 				"title": "Mostrar ambiente (Lua, DSLX, LPeg, variáveis)",
 				"category": "DSLX",
 				"icon": "$(info)"
+			},
+			{
+				"command": "dslx.colorAnnotations",
+				"title": "Aplicar cores nas anotações de tipo (@param, @return…)",
+				"category": "DSLX",
+				"icon": "$(paintcan)"
 			}
 		],
 		"menus": {

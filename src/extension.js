@@ -184,6 +184,57 @@ function activate(context) {
         4: vscode.DiagnosticSeverity.Hint,
     };
 
+    // ==========================================================
+    // cores das anotações emmylua (@param/@return/@class/@field…)
+    // ==========================================================
+    // a grammar emite os escopos (storage.type.annotation.lua, support.type.lua
+    // etc.), mas muitos temas (Monokai e derivados) só pintam o bloco inteiro
+    // como comentário. o comando aplica tokenColorCustomizations no settings
+    // do USUÁRIO — só com consentimento explícito.
+    const THEME_PATCH = {
+        'textMateRules': [
+            { scope: 'storage.type.annotation.lua', settings: { foreground: '#66d9ef', fontStyle: 'bold' } },
+            { scope: 'comment.line.double-dash.documentation.lua support.type.lua', settings: { foreground: '#66d9ef' } },
+            { scope: 'comment.line.double-dash.documentation.lua support.class.lua', settings: { foreground: '#a6e22e' } },
+            { scope: 'comment.line.double-dash.documentation.lua entity.name.variable.lua', settings: { foreground: '#fd971f' } },
+        ],
+    };
+
+    const themeCommand = vscode.commands.registerCommand('dslx.colorAnnotations', async () => {
+        const alvo = 'editor.tokenColorCustomizations';
+        const atual = vscode.workspace.getConfiguration('editor').get('tokenColorCustomizations') || {};
+        const escolha = await vscode.window.showInformationMessage(
+            'DSLX: aplicar cores para as anotações de tipo (@param, @return, @class…) no seu settings.json? Pode reverter removendo o bloco "editor.tokenColorCustomizations".',
+            'Aplicar', 'Cancelar'
+        );
+        if (escolha !== 'Aplicar') return;
+
+        const rules = (atual.textMateRules || []).slice();
+        const nossos = THEME_PATCH.textMateRules.map((r) => r.scope);
+        const merged = rules.filter((r) => !nossos.includes(r.scope)).concat(THEME_PATCH.textMateRules);
+        await vscode.workspace.getConfiguration('editor').update(
+            'tokenColorCustomizations',
+            { ...atual, textMateRules: merged },
+            vscode.ConfigurationTarget.Global
+        );
+        vscode.window.showInformationMessage('DSLX: cores aplicadas — os @annotations agora têm destaque.');
+    });
+
+    // detecta tema que não pinta as annotations e oferece o comando 1x/sessão
+    let themeOffered = false;
+    function maybeOfferColors() {
+        if (themeOffered) return;
+        themeOffered = true;
+        const tema = vscode.workspace.getConfiguration('workbench').get('colorTheme', '');
+        // heurística: Monokai conhecido por não pintar storage.type.annotation
+        if (/monokai/i.test(tema)) {
+            vscode.window.showInformationMessage(
+                `DSLX: o tema "${tema}" não destaca as anotações de tipo (@param, @return…). Quer aplicar as cores?`,
+                'Aplicar', 'Agora não'
+            ).then((r) => { if (r === 'Aplicar') vscode.commands.executeCommand('dslx.colorAnnotations'); });
+        }
+    }
+
     /** sobe (uma vez) o proxy LuaLS e abre o doc; devolve o proxy ou null */
     function getProxy(doc) {
         if (!cfg().get('analysis.useLuaLanguageServer', true)) return Promise.resolve(null);
@@ -241,6 +292,7 @@ function activate(context) {
     /** abre/sincroniza o doc no proxy quando muda */
     function syncDoc(doc) {
         if (doc.languageId !== 'dslx') return;
+        maybeOfferColors();
         getProxy(doc).then((proxy) => {
             if (!proxy) return;
             if (proxy.docs.has(doc.fileName)) {
@@ -598,7 +650,7 @@ function activate(context) {
     });
     context.subscriptions.push(formatProvider);
 
-    context.subscriptions.push(channel, diagnostics, compileCommand, runCommand, analyzeCommand, envCommand);
+    context.subscriptions.push(channel, diagnostics, compileCommand, runCommand, analyzeCommand, envCommand, themeCommand);
 }
 
 function deactivate() {}
