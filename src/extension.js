@@ -15,6 +15,7 @@ const os = require('os');
 const fs = require('fs');
 const { execFile, spawnSync } = require('child_process');
 const { alignLines } = require('./linemap');
+const { computeSuggestions, scanSymbols, LUA_GLOBALS } = require('./completion');
 
 function activate(context) {
     const runner = path.join(context.extensionPath, 'runtime', 'dslx_runner.lua');
@@ -340,6 +341,100 @@ function activate(context) {
         },
     };
     context.subscriptions.push(vscode.debug.registerDebugConfigurationProvider('dslx', debugProvider));
+
+    // ==========================================================
+    // language features: completion, hover, signature help
+    // ==========================================================
+
+    // kinds do completion.js -> API do VS Code
+    const KIND = {
+        tag: vscode.CompletionItemKind.Class,
+        prop: vscode.CompletionItemKind.Property,
+        var: vscode.CompletionItemKind.Variable,
+        func: vscode.CompletionItemKind.Function,
+        global: vscode.CompletionItemKind.Function,
+        keyword: vscode.CompletionItemKind.Keyword,
+        member: vscode.CompletionItemKind.Field,
+        snippet: vscode.CompletionItemKind.Snippet,
+    };
+
+    const completionProvider = vscode.languages.registerCompletionItemProvider('dslx', {
+        provideCompletionItems(document, position) {
+            const sugs = computeSuggestions(document.getText(), position.line, position.character);
+            return sugs.map((s) => {
+                const item = new vscode.CompletionItem(s.label, KIND[s.kind] || vscode.CompletionItemKind.Text);
+                item.detail = s.detail;
+                item.sortText = s.sortText;
+                if (s.snippet) {
+                    item.insertText = new vscode.SnippetString(s.insert);
+                } else {
+                    item.insertText = s.insert;
+                }
+                return item;
+            });
+        },
+    }, '.', '{', '<', ' ', '@'); // trigger chars (espaço p/ sair do estado de tag)
+
+    // hover: mostra o que o símbolo é (função, var, tag, global Lua)
+    const hoverProvider = vscode.languages.registerHoverProvider('dslx', {
+        provideHover(document, position) {
+            const range = document.getWordRangeAtPosition(position, /[A-Za-z_][\w.-]*/);
+            if (!range) return null;
+            const word = document.getText(range);
+            const syms = scanSymbols(document.getText());
+
+            // função do arquivo
+            const f = syms.funcs.find((x) => x.name === word);
+            if (f) {
+                const sig = `${f.local ? 'local ' : ''}function ${f.name}(${f.params.join(', ')})`;
+                const isComp = f.params.length === 1;
+                return new vscode.Hover([
+                    { language: 'dslx', value: sig },
+                    `${isComp ? 'componente/elemento DSLX — ' : ''}função definida na linha ${f.line + 1}`,
+                ]);
+            }
+            // variável
+            const v = syms.vars.find((x) => x.name === word);
+            if (v) {
+                return new vscode.Hover(`${v.kind === 'param' ? 'parâmetro' : v.kind === 'global' ? 'global' : 'local'} (linha ${v.line + 1})`);
+            }
+            // tag usada
+            if (syms.tagUses.some((u) => u.name === word)) {
+                const uses = syms.tagUses.filter((u) => u.name === word).length;
+                const props = syms.tags[word] ? [...syms.tags[word].keys()] : [];
+                return new vscode.Hover([
+                    `elemento \`<${word}>\` — ${uses} uso(s) no arquivo`,
+                    props.length ? `props vistas: ${props.map((p) => `\`${p}\``).join(', ')}` : 'sem props',
+                ]);
+            }
+            // global Lua
+            const g = LUA_GLOBALS.find(([n]) => n === word);
+            if (g) return new vscode.Hover({ language: 'lua', value: g[1] });
+            return null;
+        },
+    });
+
+    // signature help: parâmetros da função sob o cursor
+    const signatureProvider = vscode.languages.registerSignatureHelpProvider('dslx', {
+        provideSignatureHelp(document, position) {
+            const syms = scanSymbols(document.getText());
+            const line = document.lineAt(position).text.slice(0, position.character);
+            // última chamada aberta na linha: nome(
+            const m = /([A-Za-z_][\w.]*)\s*\(([^()]*)$/.exec(line);
+            if (!m) return null;
+            const f = syms.funcs.find((x) => x.name === m[1]);
+            if (!f) return null;
+
+            const sig = new vscode.SignatureInformation(`${f.name}(${f.params.join(', ')})`);
+            const commas = (m[2].match(/,/g) || []).length;
+            sig.activeParameter = commas;
+            const help = new vscode.SignatureHelp();
+            help.signatures = [sig];
+            return help;
+        },
+    }, ',', '(');
+
+    context.subscriptions.push(completionProvider, hoverProvider, signatureProvider);
 
     context.subscriptions.push(channel, diagnostics, compileCommand, runCommand, analyzeCommand, envCommand);
 }

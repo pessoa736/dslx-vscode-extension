@@ -8,6 +8,7 @@ local function soma(element)
 end
 
 local pt = function(element) print(table.unpack(element.childrens)) end
+-
 
 pt{name="pt", props={}, childrens={soma{name="soma", props={t=9}, childrens={1, 2, 3}}}}
 

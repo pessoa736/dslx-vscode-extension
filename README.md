@@ -29,6 +29,9 @@
 
 ## o que a extensão faz
 
+- **autocomplete** — contextual: depois de `<` sugere elementos/componentes do arquivo (funções e tags usadas); nos atributos sugere as props que aquela tag já recebeu em outros usos; dentro de `{...}` sugere variáveis, funções, keywords e globais do Lua; após `el.` sugere `name`/`props`/`childrens`; após `el.props.` sugere as chaves vistas; após `string.`/`table.`/etc. os membros da biblioteca; snippets (`fori`, `ifel`, `pcall`…)
+- **hover** — mostra o que o símbolo é: assinatura de função (com aviso de componente), tipo de variável, tags com uso/props, assinatura de globais Lua
+- **signature help** — parâmetros da função em edição, com o ativo destacado
 - **highlight de `.dslx`**: o código Lua é realçado com a grammar de Lua embutida no VS Code, e os elementos XML são realçados como tags — com props de string (`titulo="olá"`), props de expressão (`largura={10}`), props booleanas (`destaque`) e children (texto literal, `{expressão}` e elementos aninhados).
 - **snippets**: elemento completo, self-close, props, children de expressão e função componente.
 - **DSLX: Compilar para Lua** — gera o `.lua` correspondente do lado do `.dslx` e abre no editor.

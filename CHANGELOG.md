@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+- **autocomplete**: engine contextual puro em `src/completion.js` + provider registrado — sugere elementos/componentes (funções + tags usadas) depois de `<`, props vistas da tag nos atributos, variáveis/parâmetros/funções/keywords/globais Lua dentro de expressões `{...}`, membros do elemento (`el.name/props/childrens`), chaves de props vistas (`el.props.|`) e membros das libs padrão (`string.`, `table.`…), com snippets de for/if/pcall
+- **hover**: assinatura de funções (marcando componente de 1 arg), variáveis (local/global/parâmetro), tags (usos + props vistas) e globais Lua
+- **signature help**: parâmetros da função sob o cursor com o parâmetro ativo destacado
+- scanner de símbolos: funções, variáveis (incluindo `<const>`/`<close>`), parâmetros, tags e props com tipos inferidos (string/block/bool)
+
 ## 0.2.0
 
 - **análise de erros**: parser real + `load()` do gerado ao digitar (debounce) e ao salvar; posição do erro mapeada de volta pro `.dslx` (comando `DSLX: Analisar arquivo` e modo `check` do runner)
