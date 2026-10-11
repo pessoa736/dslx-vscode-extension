@@ -43,4 +43,4 @@ informações da liguagem/
 
 # extensão vs code
 *.vsix
-node_modules/
+node_modules/.dslx-shadow/
