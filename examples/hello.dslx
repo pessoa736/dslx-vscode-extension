@@ -1,4 +1,6 @@
 -- DSLX: Lua + XML — exemplo de fumaça da extensão
+
+---@type fun(element: element):number
 local function soma(element)
     local acc = 0
     for _, valor in ipairs(element.childrens) do

@@ -319,40 +319,59 @@ function toShadow(text) {
     const PREAMBLE_DYNAMIC = preamble;
 
     // linha de declaração de cada função-componente (local function f(el) …)
-    // + se o usuário JÁ anotou @param/@return, não injetamos nada (as
-    // anotações dele ganham; a injecção dupla quebra a inferência do LuaLS)
-    const componentAnnLines = new Map(); // linha dslx -> @param sintético | null
+    // três casos por componente:
+    //   a) usuário tipou com classe própria (@param el CardOpts) → não mexe
+    //   b) usuário anotou @param el element (o tipo genérico da DSLX) →
+    //      REESCREVEMOS essa linha com o tipo da tag (props tipadas), que é
+    //      estritamente mais info; doc comments e @return ficam intactos
+    //   c) sem @param → injeta o sintético antes da declaração
+    const componentAnnLines = new Map(); // linha decl → true (injetar) | null
+    const rewriteParamLine = new Map();  // linha dslx do '@param X element' → linha decl
     {
         const lines = text.split('\n');
-        // pega o bloco de comentários --- acima de cada declaração
-        const hasOwnParam = (declLine) => {
-            for (let k = declLine - 1; k >= 0; k--) {
-                const l = lines[k].trim();
-                if (l === '') continue;
-                if (l.startsWith('---@param')) return true;
-                if (l.startsWith('---') || l.startsWith('--')) continue;
-                return false; // comentário comum, não emmylua
-            }
-            return false;
-        };
         for (let l = 0; l < lines.length; l++) {
             const m = /(?:^|\s)local\s+function\s+([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)?\s*\)/.exec(lines[l])
                 || /(?:^|\s)function\s+([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)?\s*\)/.exec(lines[l]);
             if (m && tagNames.has(m[1]) && m[2]) {
-                componentAnnLines.set(l, hasOwnParam(l) ? null : true);
+                const paramName = m[2];
+                let paramLine = -1;
+                let ownTyped = false;
+                for (let k = l - 1; k >= 0; k--) {
+                    const t = lines[k].trim();
+                    if (t === '') continue;
+                    if (t.startsWith('---@param')) {
+                        const pm = /^---@param\s+([A-Za-z_]\w*)\s+(.+)$/.exec(t);
+                        if (pm && pm[1] === paramName) {
+                            paramLine = k;
+                            // tipo próprio (não 'element') → usuário mandou
+                            ownTyped = !/^element\b/.test(pm[2].trim());
+                        }
+                        break;
+                    }
+                    if (t.startsWith('---') || t.startsWith('--')) continue;
+                    break; // comentário comum/linha de código: fim do bloco
+                }
+                if (ownTyped) {
+                    componentAnnLines.set(l, null);
+                } else if (paramLine !== -1) {
+                    rewriteParamLine.set(paramLine, l);
+                    componentAnnLines.set(l, null);
+                } else {
+                    componentAnnLines.set(l, true);
+                }
             }
         }
     }
 
-    // ---- pré-processa: injeta as anotações de tipo ANTES das declarações ----
-    // o resultado tem +1 linha por componente; o lineMap traduz dslx↔anotado
+    // ---- pré-processa: injeta/reescreve anotações ----
+    // o resultado tem +1 linha por componente injetado; o lineMap traduz dslx↔anotado
     let annText = '';
     const srcLines0 = text.split('\n');
     let annLines = 0;
     const injectedAt = new Map(); // linha dslx -> linha no texto anotado
     for (let l = 0; l < srcLines0.length; l++) {
+        // caso (c): declaração sem @param → injeta o sintético ANTES dela
         if (componentAnnLines.get(l) === true) {
-            // @param com tipo DEDICADO da tag, só quando o usuário não anotou
             const mDecl = /(?:^|\s)(?:local\s+)?function\s+([A-Za-z_]\w*)\s*\(/.exec(srcLines0[l]);
             const tag = mDecl ? mDecl[1] : null;
             const propsClass = tag && tagProps.has(tag) ? `${tag}_props` : '';
@@ -362,9 +381,23 @@ function toShadow(text) {
             annText += `---@param el ${paramType}\n`;
             annLines++;
         }
+        // linha fonte (ou o @param reescrito no caso b)
+        if (rewriteParamLine.has(l)) {
+            const declLine = rewriteParamLine.get(l);
+            const mDecl = /(?:^|\s)(?:local\s+)?function\s+([A-Za-z_]\w*)\s*\(/.exec(srcLines0[declLine]);
+            const tag = mDecl ? mDecl[1] : null;
+            const propsClass = tag && tagProps.has(tag) ? `${tag}_props` : '';
+            const paramName = srcLines0[l].replace(/^---@param\s+([A-Za-z_]\w*).*$/, '$1');
+            annText += propsClass
+                ? `---@param ${paramName} {name:string, props:${propsClass}, childrens:any[]}\n`
+                : srcLines0[l] + '\n';
+        } else {
+            annText += srcLines0[l] + '\n';
+        }
         injectedAt.set(l, l + annLines);
-        annText += srcLines0[l] + (l < srcLines0.length - 1 ? '\n' : '');
     }
+    // a última linha não ganha \n extra se o fonte não termina com um
+    if (annText.endsWith('\n') && !text.endsWith('\n')) annText = annText.slice(0, -1);
 
     // ---- mapa de linhas: dslxLine -> shadowLine (preâmbulo + anotações) ----
     // PREAMBLE termina com \n; conteúdo começa na linha = nº de \n do preâmbulo
