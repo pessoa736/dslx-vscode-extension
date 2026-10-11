@@ -348,7 +348,14 @@ function activate(context) {
     if (cfg().get('analysis.enable', true)) {
         context.subscriptions.push(
             vscode.workspace.onDidChangeTextDocument((e) => {
-                if (e.document.languageId === 'dslx') scheduleAnalyze(e.document.uri);
+                if (e.document.languageId !== 'dslx') return;
+                // IMEDIATO: alimenta o LuaLS com o texto novo na hora — sem isso
+                // hover e inlay hints mostram tipos do estado ANTES da edição
+                // (didChange e requests seguintes são ordenados no stdio do
+                // server, então toda consulta já vê o texto novo)
+                syncDoc(e.document);
+                // o parser externo continua com debounce (spawn é caro)
+                scheduleAnalyze(e.document.uri);
             }),
             vscode.workspace.onDidSaveTextDocument((doc) => {
                 if (doc.languageId === 'dslx') { syncDoc(doc); analyze(doc.fileName, false); }

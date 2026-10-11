@@ -192,6 +192,22 @@ class LspProxy {
             }
         }
 
+        // runtime: Lua 5.4 (a 5.5 do sistema ainda não tem meta no LuaLS; 5.4
+        // cobre a stdlib que o dslx usa)
+        if (cfg['runtime.version'] === undefined) cfg['runtime.version'] = 'Lua 5.4';
+
+        // integração com sumneko.lua/tencent.lua: o .luarc.json é COMPARTILHADO
+        // — quem usa essas extensões no mesmo workspace ganha a mesma config.
+        // os shadow files e dirs de debug são ignorados pra não poluir os
+        // diagnósticos delas com código sintetizado nosso
+        cfg['workspace.ignoreDir'] = Array.isArray(cfg['workspace.ignoreDir']) ? cfg['workspace.ignoreDir'] : [];
+        for (const d of ['.dslx-shadow', '.dslx-debug']) {
+            if (!cfg['workspace.ignoreDir'].includes(d)) cfg['workspace.ignoreDir'].push(d);
+        }
+        // extensão de arquivo: os .dslx não devem ser parseados como lua por
+        // extensões lua de terceiros (só via shadow)
+        if (!cfg['workspace.supportVLua']) cfg['workspace.supportVLua'] = cfg['workspace.supportVLua'] !== undefined ? cfg['workspace.supportVLua'] : false;
+
         fs.writeFileSync(luarc, JSON.stringify(cfg, null, 4));
         this._luarcPath = luarc;
     }
