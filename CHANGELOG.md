@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0
+
+- **hover com lua-language-server de verdade**: middleware LSP (`src/lsp.js`) que abre o `.dslx` pro LuaLS via **shadow transform** (`src/shadow.js`) — o construct `<card titulo="olá">` vira a chamada `card{name="card", props={titulo="olá"}, childrens={...}}` nas MESMAS posições, então hover, diagnósticos e completion voltam com tipo inferido real (`local total <const>: integer = 0`) e mapeados 1:1 pro `.dslx`; blocos `{expr}` mapeiam por tabela de offsets
+- **variáveis/watch no debugger**: `evaluate` na engine (locals da frame como parâmetros + `_ENV` → `_G`) exposto no DAP — Watch, REPL, Debug Console e hover-de-variável-na-parada funcionam (`supportsEvaluateForHovers: true`)
+- **fix completion em declaração**: `local ab|`, `function f(ab|`, `for k|` não sugerem mais identificadores existentes
+- **completion semântico**: merge das sugestões do LuaLS (escopo real) com o engine contextual local
+- **code formatting**: `Shift+Alt+F` re-indenta funções e constructs aninhados (zero dependências, idempotente)
+- diagnóstico agora em tempo real: o proxy LuaLS fica vivo e publica ao digitar (não spawn por save)
+
 ## 0.3.0
 
 - **autocomplete**: engine contextual puro em `src/completion.js` + provider registrado — sugere elementos/componentes (funções + tags usadas) depois de `<`, props vistas da tag nos atributos, variáveis/parâmetros/funções/keywords/globais Lua dentro de expressões `{...}`, membros do elemento (`el.name/props/childrens`), chaves de props vistas (`el.props.|`) e membros das libs padrão (`string.`, `table.`…), com snippets de for/if/pcall

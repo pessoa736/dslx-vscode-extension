@@ -424,14 +424,58 @@ local stepping = false
 local step_mode = "into" -- "into" | "over" | "out"
 local step_target = 0
 local first_stop = true
+local stopped_base = 3 -- recalculada a cada parada/consumo (find_program_base)
+
+--- avaliação de expressão no contexto da frame.
+--- níveis de debug são RELATIVOS ao ponto de chamada: coletar locals aqui na
+--- própria frame de do_evaluate dá a mesma régua de build_scopes
+--- (1=do_evaluate, 2=stopped, 3=hook, 4+=programa). o pcall só envolve a
+--- avaliação — dentro dele a régua muda, então nada de nível lá.
+local function do_evaluate(frame, expr)
+    if type(expr) ~= "string" or expr == "" then
+        return nil, "expressão vazia"
+    end
+    local level = stopped_base + frame
+
+    -- coleta locals na própria frame (régua idêntica a build_scopes)
+    local info = debug.getinfo(level, "f")
+    if not info then return nil, "frame inválida" end
+    local names, values = {}, {}
+    local i = 1
+    while true do
+        local name, value = debug.getlocal(level, i)
+        if not name then break end
+        if not name:find("^%(") then
+            names[#names + 1] = name
+            values[#values + 1] = value
+        end
+        i = i + 1
+    end
+
+    -- expressão vira função com parâmetros = locals da frame
+    local params = table.concat(names, ", ")
+    local f, lerr = load("return function(" .. params .. ")\nreturn " .. expr .. "\nend", "=watch", "t")
+    if not f then return nil, "sintaxe inválida: " .. tostring(lerr) end
+    local outer = f()
+
+    -- _ENV da watch function aponta pro _G do programa
+    local j = 1
+    while true do
+        local un = debug.getupvalue(outer, j)
+        if not un then break end
+        if un == "_ENV" then debug.setupvalue(outer, j, _G) end
+        j = j + 1
+    end
+
+    local ok, res = pcall(outer, table.unpack(values))
+    if ok then return res end
+    return nil, tostring(res):gsub("^.-:%d+: ", "")
+end
 
 --- loop de comandos enquanto parado; base = nível da frame mais externa do programa
-local stopped_base = 3
-
 --- calcula a base AQUI (mesma profundidade de onde build_* vão consumir):
 --- 1 = find_program_base, 2 = stopped, 3 = hook, 4+ = programa
 local function stopped(path, line, reason)
-    stopped_base = find_program_base()
     load_breakpoints() -- pega breakpoints atualizados
     if first_stop and stop_on_entry then reason = "entry" end
     first_stop = false
@@ -442,6 +486,10 @@ local function stopped(path, line, reason)
         if not l then os.exit(0) end -- adapter sumeceu
         local ok, cmd = pcall(from_json, l)
         if ok and type(cmd) == "table" then
+            -- base recalculada NO momento do consumo: a cadeia de chamadas
+            -- muda (handler do comando é um nível acima de find_program_base),
+            -- então medir de um lugar fixo dá frame errada
+            stopped_base = find_program_base()
             local c = cmd.cmd
             if c == "continue" then
                 stepping = false
@@ -465,6 +513,12 @@ local function stopped(path, line, reason)
                 emit { resp = "scopes", frame = cmd.frame, scopes = build_scopes(stopped_base, cmd.frame or 0) }
             elseif c == "variables" then
                 emit { resp = "variables", ref = cmd.ref, variables = build_variables(cmd.ref) }
+            elseif c == "evaluate" then
+                -- avalia expressão no contexto da frame (locals + upvalues visíveis)
+                local frame = cmd.frame or 0
+                local expr = cmd.expression
+                local result, err = do_evaluate(frame, expr)
+                emit { resp = "evaluate", result = select(1, format_value(result)), type = type(result), ref = ref_of(result), err = err }
             end
         end
     end

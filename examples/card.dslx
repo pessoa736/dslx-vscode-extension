@@ -11,6 +11,7 @@ local function card(el)
     return el.name .. "[" .. table.concat(partes, ", ") .. "]"
 end
 
+
 local c1 = 
     <card 
         titulo="olá" 

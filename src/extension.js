@@ -16,6 +16,8 @@ const fs = require('fs');
 const { execFile, spawnSync } = require('child_process');
 const { alignLines } = require('./linemap');
 const { computeSuggestions, scanSymbols, LUA_GLOBALS } = require('./completion');
+const { LspProxy } = require('./lsp');
+const { formatDslx } = require('./formatter');
 
 function activate(context) {
     const runner = path.join(context.extensionPath, 'runtime', 'dslx_runner.lua');
@@ -112,9 +114,11 @@ function activate(context) {
         return d;
     }
 
-    // ---------- lua-language-server ----------
+    // ---------- lua-language-server (proxy LSP vivo) ----------
 
     let lualsCache = null; // true/false/null (não testado ainda)
+    let lspProxy = null;
+    let lspStarting = null;
 
     function luaLanguageServerPath() {
         return cfg().get('analysis.luaLanguageServerPath', 'lua-language-server');
@@ -131,72 +135,81 @@ function activate(context) {
         return lualsCache;
     }
 
-    /** compila pra um .lua temporário e roda o LuaLS em cima, mapeando de volta */
-    async function lualsCheck(file, add) {
-        if (!cfg().get('analysis.useLuaLanguageServer', true) || !hasLuaLS()) return;
+    /** severidade LSP → VS Code */
+    const LSP_SEV = {
+        1: vscode.DiagnosticSeverity.Error,
+        2: vscode.DiagnosticSeverity.Warning,
+        3: vscode.DiagnosticSeverity.Information,
+        4: vscode.DiagnosticSeverity.Hint,
+    };
 
-        // workspace temporário: compila o .lua lá e deixa o LuaLS varrer o dir
-        const cacheDir = path.join(os.tmpdir(), 'dslx-ls');
-        fs.mkdirSync(cacheDir, { recursive: true });
-
-        const r = await runRunner(['compile', file, cacheDir], path.dirname(file));
-        if (r.err) return;
-        const gen = path.join(cacheDir, path.basename(file).replace(/\.dslx$/i, '.lua'));
-        if (!fs.existsSync(gen)) return;
-
-        // limpa outros .lua do cache pra não vazar diagnóstico de arquivo antigo
-        for (const f of fs.readdirSync(cacheDir)) {
-            if (f.endsWith('.lua') && f !== path.basename(gen)) {
-                try { fs.rmSync(path.join(cacheDir, f)); } catch (_) {}
-            }
+    /** sobe (uma vez) o proxy LuaLS e abre o doc; devolve o proxy ou null */
+    function getProxy(doc) {
+        if (!cfg().get('analysis.useLuaLanguageServer', true) || !hasLuaLS()) return Promise.resolve(null);
+        if (lspProxy && lspProxy.ready) {
+            if (!lspProxy.docs.has(doc.fileName)) lspProxy.openDoc(doc.fileName, doc.getText());
+            return Promise.resolve(lspProxy);
         }
+        if (lspStarting) return lspStarting.then(() => getProxy(doc));
 
-        // mapa de linhas gerado -> dslx
-        let map = [];
-        try {
-            map = alignLines(fs.readFileSync(file, 'utf8'), fs.readFileSync(gen, 'utf8'));
-        } catch (_) { return; }
-
-        const outFile = path.join(cacheDir, 'check.json');
-        try { fs.rmSync(outFile); } catch (_) {}
-
-        return new Promise((resolve) => {
-            execFile(luaLanguageServerPath(), [
-                '--check=' + cacheDir,
-                '--checklevel=Warning',
-                '--check_format=json',
-                '--check_out_path=' + outFile,
-            ], {
-                cwd: cacheDir,
-                encoding: 'utf8',
-                env: childEnv(),
-                timeout: 120000,
-            }, (err, stdout, stderr) => {
-                let report = null;
-                try { report = JSON.parse(fs.readFileSync(outFile, 'utf8')); } catch (_) {}
-                if (!report) return resolve();
-
-                const target = 'file://' + gen;
-                const diags = report[target] || [];
-                for (const dg of diags) {
-                    const genLine = ((dg.range || {}).start || {}).line;
-                    if (genLine === undefined || !map[genLine + 1]) continue;
-                    const dslxLine = map[genLine + 1];
-                    const sev = dg.severity === 1
-                        ? vscode.DiagnosticSeverity.Error
-                        : vscode.DiagnosticSeverity.Warning;
-                    const d = new vscode.Diagnostic(
-                        new vscode.Range(dslxLine - 1, 0, dslxLine - 1, 1),
-                        `[lua-language-server] ${dg.message}`,
-                        sev
-                    );
-                    d.source = 'lua-language-server';
-                    if (dg.code) d.code = dg.code;
-                    add(d);
-                }
-                resolve();
+        const wsFolder = vscode.workspace.getWorkspaceFolder(doc.uri);
+        lspStarting = new Promise((resolve) => {
+            const p = new LspProxy({
+                serverPath: luaLanguageServerPath(),
+                rootUri: wsFolder ? wsFolder.uri.toString() : 'file://' + path.dirname(doc.fileName),
+                log: (m) => channel.appendLine(m),
+                onDiagnostics: (dslxUri, list) => {
+                    const uri = vscode.Uri.parse(dslxUri);
+                    const ds = list.map((dg) => {
+                        const d = new vscode.Diagnostic(
+                            new vscode.Range(
+                                dg.range.start.line, dg.range.start.character,
+                                dg.range.end.line, dg.range.end.character
+                            ),
+                            dg.message,
+                            LSP_SEV[dg.severity] || vscode.DiagnosticSeverity.Warning
+                        );
+                        d.source = 'lua-language-server';
+                        if (dg.code) d.code = dg.code;
+                        return d;
+                    });
+                    // merge com os diagnósticos do parser dslx (se houver)
+                    const existing = diagnostics.get(uri);
+                    const parserDs = (existing || []).filter((d) => d.source === 'dslx');
+                    diagnostics.set(uri, [...parserDs, ...ds]);
+                },
+            });
+            p.start().then(() => {
+                lspProxy = p;
+                resolve(p);
+            }).catch((e) => {
+                channel.appendLine('LuaLS falhou: ' + e.message);
+                resolve(null);
             });
         });
+        return lspStarting.then(() => getProxy(doc));
+    }
+
+    /** abre/sincroniza o doc no proxy quando muda */
+    function syncDoc(doc) {
+        if (doc.languageId !== 'dslx') return;
+        getProxy(doc).then((proxy) => {
+            if (!proxy) return;
+            if (proxy.docs.has(doc.fileName)) {
+                proxy.changeDoc(doc.fileName, doc.getText(), doc.version);
+            } else {
+                proxy.openDoc(doc.fileName, doc.getText(), doc.version);
+            }
+        });
+    }
+
+    /** análise de um arquivo por demanda (comando analizar): parser + push do LuaLS */
+    async function lualsCheck(file, add) {
+        if (!cfg().get('analysis.useLuaLanguageServer', true) || !hasLuaLS()) return;
+        // o proxy vivo publica diagnósticos via onDiagnostics; aqui só garantimos
+        // que o doc tá aberto (o analyze explícito reabre pra forçar)
+        const doc = vscode.workspace.textDocuments.find((d) => d.fileName === file);
+        if (doc) syncDoc(doc);
     }
 
     /** análise completa: parser + LuaLS; atualiza a coleção de diagnósticos */
@@ -223,7 +236,10 @@ function activate(context) {
         timers.set(key, setTimeout(async () => {
             timers.delete(key);
             const doc = vscode.workspace.textDocuments.find((d) => d.fileName === key);
-            if (doc && doc.isDirty) return; // só analisa o que tá salvo em disco
+            if (!doc) return;
+            // parser roda no arquivo salvo; o proxy LSP sincroniza o texto vivo
+            syncDoc(doc);
+            if (doc.isDirty) return;
             try { await analyze(key, false); } catch (_) {}
         }, 700));
     }
@@ -234,12 +250,18 @@ function activate(context) {
                 if (e.document.languageId === 'dslx') scheduleAnalyze(e.document.uri);
             }),
             vscode.workspace.onDidSaveTextDocument((doc) => {
-                if (doc.languageId === 'dslx') analyze(doc.fileName, false);
+                if (doc.languageId === 'dslx') { syncDoc(doc); analyze(doc.fileName, false); }
+            }),
+            vscode.workspace.onDidOpenTextDocument((doc) => {
+                if (doc.languageId === 'dslx') syncDoc(doc);
+            }),
+            vscode.workspace.onDidCloseTextDocument((doc) => {
+                if (doc.languageId === 'dslx' && lspProxy) lspProxy.closeDoc(doc.fileName);
             })
         );
-        // analisa os .dslx já abertos
+        // sincroniza os .dslx já abertos
         for (const doc of vscode.workspace.textDocuments) {
-            if (doc.languageId === 'dslx') analyze(doc.fileName, false);
+            if (doc.languageId === 'dslx') { syncDoc(doc); analyze(doc.fileName, false); }
         }
     }
 
@@ -359,25 +381,68 @@ function activate(context) {
     };
 
     const completionProvider = vscode.languages.registerCompletionItemProvider('dslx', {
-        provideCompletionItems(document, position) {
+        async provideCompletionItems(document, position) {
+            // 1. sugestões semânticas do LuaLS (via shadow — escopo real)
+            const lualsItems = [];
+            const proxy = await getProxy(document);
+            if (proxy) {
+                const r = await proxy.completion(document.fileName, position.line, position.character);
+                const items = r && r.result && (r.result.items || r.result);
+                if (Array.isArray(items)) {
+                    for (const it of items) {
+                        // só símbolos (functions/vars/fields); keywords/snippets ficam com o engine local
+                        if (it.kind === 14 || it.kind === 15) continue; // Keyword / Snippet do LSP
+                        const item = new vscode.CompletionItem(
+                            it.label,
+                            it.kind === 3 ? vscode.CompletionItemKind.Function : undefined
+                        );
+                        if (it.detail) item.detail = '[LuaLS] ' + it.detail;
+                        if (it.insertText) item.insertText = it.insertText;
+                        if (it.documentation) {
+                            item.documentation = it.documentation.value
+                                ? it.documentation.value
+                                : String(it.documentation);
+                        }
+                        lualsItems.push(item);
+                    }
+                }
+            }
+
+            // 2. engine contextual local (tags, props, guards de declaração…)
             const sugs = computeSuggestions(document.getText(), position.line, position.character);
-            return sugs.map((s) => {
+
+            // merge: prioridade pro LuaLS (semântica); local cobre os contextos DSLX
+            const seen = new Set(lualsItems.map((i) => i.label));
+            const localItems = sugs.map((s) => {
                 const item = new vscode.CompletionItem(s.label, KIND[s.kind] || vscode.CompletionItemKind.Text);
                 item.detail = s.detail;
                 item.sortText = s.sortText;
-                if (s.snippet) {
-                    item.insertText = new vscode.SnippetString(s.insert);
-                } else {
-                    item.insertText = s.insert;
-                }
+                item.insertText = s.snippet ? new vscode.SnippetString(s.insert) : s.insert;
                 return item;
             });
-        },
-    }, '.', '{', '<', ' ', '@'); // trigger chars (espaço p/ sair do estado de tag)
 
-    // hover: mostra o que o símbolo é (função, var, tag, global Lua)
+            return [...lualsItems, ...localItems.filter((i) => !seen.has(i.label))];
+        },
+    }, '.', '{', '<', ' ', '@');
+
+    // hover: lua-language-server primeiro (tipos inferidos, doc comments),
+    // fallback pro scanner local
     const hoverProvider = vscode.languages.registerHoverProvider('dslx', {
-        provideHover(document, position) {
+        async provideHover(document, position) {
+            // 1. LuaLS via shadow (posições idênticas)
+            const proxy = await getProxy(document);
+            if (proxy) {
+                const r = await proxy.hover(document.fileName, position.line, position.character);
+                const contents = r && r.result && r.result.contents;
+                if (contents) {
+                    const md = contents.value
+                        ? [contents.value]
+                        : [contents];
+                    return new vscode.Hover(md);
+                }
+            }
+
+            // 2. fallback: scanner local
             const range = document.getWordRangeAtPosition(position, /[A-Za-z_][\w.-]*/);
             if (!range) return null;
             const word = document.getText(range);
@@ -435,6 +500,18 @@ function activate(context) {
     }, ',', '(');
 
     context.subscriptions.push(completionProvider, hoverProvider, signatureProvider);
+
+    // formatação: Shift+Alt+F / "Format Document"
+    const formatProvider = vscode.languages.registerDocumentFormattingEditProvider('dslx', {
+        provideDocumentFormattingEdits(document) {
+            const formatted = formatDslx(document.getText());
+            if (formatted === document.getText()) return [];
+            const lastLine = document.lineAt(document.lineCount - 1);
+            const fullRange = new vscode.Range(0, 0, document.lineCount - 1, lastLine.range.end.character);
+            return [vscode.TextEdit.replace(fullRange, formatted)];
+        },
+    });
+    context.subscriptions.push(formatProvider);
 
     context.subscriptions.push(channel, diagnostics, compileCommand, runCommand, analyzeCommand, envCommand);
 }

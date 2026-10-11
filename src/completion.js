@@ -284,6 +284,24 @@ function memberSuggestions(syms, base) {
     return out;
 }
 
+// ---------- helpers de contexto ----------
+
+/**
+ * cursor tá digitando um NOME novo (declaração)? nesses lugares não
+ * sugerimos identificadores existentes — a pessoa tá criando um nome:
+ *   local abc|   local a, bc|   function f(a, b|   for k|   for k, v|
+ */
+function isDeclaringName(lineText) {
+    // local <nomes parciais> (sem = nem in)
+    if (/(?:^|[^\w.])local\s+(?:[A-Za-z_][\w.]*\s*,\s*)*[A-Za-z_][\w.]*$/.test(lineText)) return true;
+    // nomes de parâmetros de função
+    if (/function\s+[A-Za-z_][\w.]*\s*\((?:[^()]*,\s*)?[A-Za-z_][\w.]*$/.test(lineText)) return true;
+    // for <nomes> sem "in" ainda
+    const forM = /(?:^|[^\w.])for\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)$/.exec(lineText);
+    if (forM && !/\bin\b/.test(forM[1])) return true;
+    return false;
+}
+
 // ---------- entry point ----------
 
 /**
@@ -298,7 +316,13 @@ function computeSuggestions(text, line, character) {
     const lineStart = lines.slice(0, line).reduce((a, l) => a + l.length + 1, 0);
     const pos = lineStart + character;
     const prefix = text.slice(0, pos);
+    const lineText = lines[line].slice(0, character);
     const syms = scanSymbols(text);
+
+    // ---- criando um nome novo (declaração)? → sem sugestão de identificadores ----
+    if (isDeclaringName(lineText)) {
+        return []; // a pessoa tá batizando; sugerir nomes existentes é ruído
+    }
 
     // ---- contexto: dentro de uma tag aberta? ----
     const lastLt = prefix.lastIndexOf('<');
@@ -338,7 +362,6 @@ function computeSuggestions(text, line, character) {
 
     // ---- contexto: children de expressão / script {…} ----
     // (aproximação: prefixo termina com { ou { + expressão sem } na mesma linha)
-    const lineText = lines[line].slice(0, character);
     if (/\{\s*[A-Za-z_][\w.]*$/.test(lineText) && !lineText.endsWith('}')) {
         return exprSuggestions(syms);
     }

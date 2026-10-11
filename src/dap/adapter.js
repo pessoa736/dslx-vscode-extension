@@ -175,9 +175,10 @@ function handleDap(req) {
                 supportsConfigurationDoneRequest: true,
                 supportsConditionalBreakpoints: false,
                 supportsHitConditionalBreakpoints: false,
-                supportsEvaluateForHovers: false,
+                supportsEvaluateForHovers: true,
                 supportsSetVariable: false,
                 supportsTerminateRequest: false,
+                supportsRestartFrame: false,
                 exceptionBreakpointFilters: [],
             });
             event('initialized');
@@ -351,9 +352,20 @@ function handleDap(req) {
                 .catch(() => respondError(req, 'engine parada'));
             break;
 
-        case 'evaluate':
-            respondError(req, 'avaliação de expressões ainda não suportada');
+        case 'evaluate': {
+            const args = req.arguments || {};
+            sendEngine({ cmd: 'evaluate', frame: args.frameId || 0, expression: args.expression || '' })
+                .then((r) => {
+                    // watch de erro: VS Code mostra resultado + não marca o watch como falho
+                    respond(req, {
+                        result: r.err ? r.err : r.result,
+                        variablesReference: r.ref || 0,
+                        success: !r.err,
+                    });
+                })
+                .catch(() => respondError(req, 'engine parada'));
             break;
+        }
 
         case 'pause':
             respondError(req, 'pause não suportado nesta versão');
