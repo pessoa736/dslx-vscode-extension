@@ -1,4 +1,10 @@
+---@class (partial) element
+---@field name string
+---@field props table<string, any>
+---@field childrens any[]
+
 --- componente que soma os childrens com o peso da prop
+---@param el element
 local function soma(el)
   local total <const> = 0
   for _, v in ipairs(el.childrens) do

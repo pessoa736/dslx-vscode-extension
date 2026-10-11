@@ -1,7 +1,13 @@
+---@class (partial) element
+---@field name string
+---@field props table<string, any>
+---@field childrens any[]
+
 
 
 
 -- props: string, expressão e boolean; children: texto, expressão e elemento aninhado
+---@param el element
 local function card(el)
     local props <const> = el.props
     local partes = {}

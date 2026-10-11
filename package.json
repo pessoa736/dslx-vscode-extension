@@ -2,7 +2,7 @@
 	"name": "dslx",
 	"displayName": "DSLX — Davi System Lua-XML",
 	"description": "Suporte à linguagem DSLX (Lua + XML estilo JSX): highlight, snippets, diagnóstico de erros, lua-language-server, compilação, execução e debugger.",
-	"version": "0.4.0",
+	"version": "0.5.0",
 	"publisher": "pessoa736",
 	"license": "MIT",
 	"icon": "./icon.png",
@@ -224,9 +224,14 @@
 					"description": "Usar o lua-language-server (se instalado) pra analisar o .lua compilado e mapear os avisos de volta pro .dslx. Roda ao salvar e no comando de análise."
 				},
 				"dslx.analysis.luaLanguageServerPath": {
-					"type": "string",
-					"default": "lua-language-server",
-					"description": "Caminho do binário lua-language-server (comando no PATH ou caminho absoluto)."
+				"type": "string",
+				"default": "",
+				"description": "Caminho do binário lua-language-server. Vazio = detecta automaticamente: usa o LuaLS bundled da extensão sumneko.lua se instalada, senão o comando 'lua-language-server' do PATH."
+				},
+				"dslx.analysis.luarocksTree": {
+				"type": "string",
+				"default": "",
+				"description": "Caminho do tree do luarocks (ex.: ./lua_modules) pra completar tipos de módulos instalados. Vazio = detecta lua_modules/ ou .luarocks/ no workspace."
 				}
 			}
 		}

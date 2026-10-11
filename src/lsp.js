@@ -43,6 +43,7 @@ class LspProxy {
 
     start() {
         fs.mkdirSync(this.shadowDir, { recursive: true });
+        this._writeLuarc();
         this.proc = spawn(this.serverPath, this.serverArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
         this.buf = Buffer.alloc(0);
 
@@ -64,6 +65,13 @@ class LspProxy {
             workspaceFolders: null,
         }).then((res) => {
             this._notify('initialized', {});
+            // config de hints/hover: habilita inlay hints e tipos no hover
+            this._notify('workspace/didChangeConfiguration', { settings: { Lua: {
+                hint: { enable: true, setType: true, paramType: true, await: true },
+                hover: { enable: true },
+                diagnostics: { enable: true, globals: ['is_element'] },
+                telemetry: { enable: false },
+            } } });
             this.ready = true;
             return res;
         });
@@ -156,6 +164,38 @@ class LspProxy {
         return p;
     }
 
+    /** config do server: .luarc.json no workspace (o CLI não honra
+     *  didChangeConfiguration pra hints — precisa do arquivo).
+     *  integra luarocks: tree local (lua_modules/.luarocks) vira workspace.library */
+    _writeLuarc() {
+        const ws = this.rootUri ? this.rootUri.replace('file://', '') : this.shadowDir;
+        const luarc = path.join(ws, '.luarc.json');
+        // não sobrescreve config do usuário: se existir, adiciona só o que falta
+        let cfg = {};
+        try { cfg = JSON.parse(fs.readFileSync(luarc, 'utf8')); } catch (_) {}
+        cfg['hint.enable'] = cfg['hint.enable'] !== undefined ? cfg['hint.enable'] : true;
+        cfg['hint.setType'] = cfg['hint.setType'] !== undefined ? cfg['hint.setType'] : true;
+        cfg['hint.paramType'] = cfg['hint.paramType'] !== undefined ? cfg['hint.paramType'] : true;
+        cfg['hint.await'] = cfg['hint.await'] !== undefined ? cfg['hint.await'] : true;
+        cfg['hover.enable'] = cfg['hover.enable'] !== undefined ? cfg['hover.enable'] : true;
+        cfg['diagnostics.enable'] = cfg['diagnostics.enable'] !== undefined ? cfg['diagnostics.enable'] : true;
+        cfg['diagnostics.globals'] = Array.isArray(cfg['diagnostics.globals']) ? cfg['diagnostics.globals'] : [];
+        if (!cfg['diagnostics.globals'].includes('is_element')) cfg['diagnostics.globals'].push('is_element');
+
+        // luarocks: bibliotecas do tree local entram no workspace.library
+        if (!Array.isArray(cfg['workspace.library'])) cfg['workspace.library'] = [];
+        for (const cand of ['lua_modules/share/lua/5.5', 'lua_modules/share/lua/5.4',
+            '.luarocks/share/lua/5.5', '.luarocks/share/lua/5.4']) {
+            const dir = path.join(ws, cand);
+            if (fs.existsSync(dir) && !cfg['workspace.library'].includes(dir)) {
+                cfg['workspace.library'].push(dir);
+            }
+        }
+
+        fs.writeFileSync(luarc, JSON.stringify(cfg, null, 4));
+        this._luarcPath = luarc;
+    }
+
     /** shadowDir efetivo: dentro do workspace do doc, senão o default */
     _ensureShadowDir(dslxPath) {
         if (this._shadowDirFor === dslxPath) return;
@@ -166,10 +206,10 @@ class LspProxy {
     }
 
     openDoc(dslxPath, dslxText, version = 1) {
-        const { shadow, elements } = toShadow(dslxText);
+        const { shadow, elements, lineMap } = toShadow(dslxText);
         this._writeShadow(dslxPath, shadow);
         const uri = this.shadowUri(dslxPath);
-        this.docs.set(dslxPath, { version, shadowText: shadow, elements, origText: dslxText });
+        this.docs.set(dslxPath, { version, shadowText: shadow, elements, lineMap, origText: dslxText });
         this._notify('textDocument/didOpen', {
             textDocument: { uri, languageId: 'lua', version, text: shadow },
         });
@@ -177,14 +217,14 @@ class LspProxy {
     }
 
     changeDoc(dslxPath, dslxText, version) {
-        const { shadow, elements } = toShadow(dslxText);
+        const { shadow, elements, lineMap } = toShadow(dslxText);
         this._writeShadow(dslxPath, shadow);
         const uri = this.shadowUri(dslxPath);
         this._notify('textDocument/didChange', {
             textDocument: { uri, version },
             contentChanges: [{ text: shadow }],
         });
-        this.docs.set(dslxPath, { version, shadowText: shadow, elements, origText: dslxText });
+        this.docs.set(dslxPath, { version, shadowText: shadow, elements, lineMap, origText: dslxText });
     }
 
     closeDoc(dslxPath) {
@@ -199,8 +239,68 @@ class LspProxy {
     _pos(dslxPath, line, character) {
         const doc = this.docs.get(dslxPath);
         if (!doc) return { line, character };
-        const p = dslxToShadowPos(doc.origText, doc.elements || [], line, character);
+        const p = dslxToShadowPos(doc.elements || [], doc.lineMap, line, character);
         return p || { line, character };
+    }
+
+    /** posição shadow → dslx (reverse do lineMap; usada pros inlay hints) */
+    _posBack(dslxPath, line, character) {
+        const doc = this.docs.get(dslxPath);
+        if (!doc || !doc.lineMap) return { line, character };
+        const idx = doc.lineMap.indexOf(line);
+        if (idx === -1) return { line, character };
+        return { line: idx, character };
+    }
+
+    /** inlay hints do range dslx (traduz range → shadow e as posições de volta) */
+    async inlayHints(dslxPath, startLine, endLine) {
+        const doc = this.docs.get(dslxPath);
+        if (!doc) return [];
+        const s = this._pos(dslxPath, startLine, 0);
+        const e = this._pos(dslxPath, endLine, 0);
+        const r = await this._request('textDocument/inlayHint', {
+            textDocument: { uri: this.shadowUri(dslxPath) },
+            range: {
+                start: s,
+                end: e || { line: endLine, character: 0 },
+            },
+        });
+        const hints = r && r.result;
+        if (!Array.isArray(hints)) return [];
+        // traduz posição de volta pro dslx e devolve no formato interno
+        return hints.map((h) => {
+            const back = this._posBack(dslxPath, h.position.line, h.position.character);
+            const label = typeof h.label === 'string'
+                ? h.label
+                : (h.label || []).map((v) => v.value).join('');
+            return {
+                line: back.line,
+                character: back.character,
+                label,
+                kind: h.kind,
+                tooltip: h.tooltip && h.tooltip.contents ? h.tooltip.contents.value : undefined,
+            };
+        });
+    }
+
+    /** assinatura da função-tag chamada na linha dslx (pra enriquecer hover) */
+    async tagCallSignatureAt(dslxPath, line, character) {
+        const doc = this.docs.get(dslxPath);
+        if (!doc || !doc.origText) return null;
+        const lines = doc.origText.split('\n');
+        const l = lines[line];
+        if (!l) return null;
+        // tem um construct de tag na linha? <tag …
+        const m = /<([A-Za-z_][\w.-]*)/.exec(l);
+        if (!m) return null;
+        const tagCol = l.indexOf(m[0]);
+        const pos = this._pos(dslxPath, line, tagCol + 1);
+        const r = await this._request('textDocument/hover', {
+            textDocument: { uri: this.shadowUri(dslxPath) },
+            position: pos,
+        });
+        const v = r && r.result && r.result.contents && r.result.contents.value;
+        return v || null;
     }
 
     hover(dslxPath, line, character) {

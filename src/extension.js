@@ -121,7 +121,19 @@ function activate(context) {
     let lspStarting = null;
 
     function luaLanguageServerPath() {
-        return cfg().get('analysis.luaLanguageServerPath', 'lua-language-server');
+        const configured = cfg().get('analysis.luaLanguageServerPath', '');
+        if (configured) return configured;
+        // fallback: LuaLS bundled da extensão sumneko.lua, se instalada
+        const bundled = path.join(os.homedir(), '.vscode/extensions');
+        try {
+            const dirs = fs.readdirSync(bundled).filter((d) => /^sumneko\.lua-/.test(d)).sort();
+            const last = dirs[dirs.length - 1];
+            if (last) {
+                const cand = path.join(bundled, last, 'server/bin/lua-language-server');
+                if (fs.existsSync(cand)) return cand;
+            }
+        } catch (_) {}
+        return 'lua-language-server';
     }
 
     function hasLuaLS() {
@@ -435,9 +447,17 @@ function activate(context) {
                 const r = await proxy.hover(document.fileName, position.line, position.character);
                 const contents = r && r.result && r.result.contents;
                 if (contents) {
-                    const md = contents.value
-                        ? [contents.value]
-                        : [contents];
+                    let md = contents.value ? [contents.value] : [contents];
+
+                    // hover fraco (unknown) numa var que recebe tag na mesma linha?
+                    // enriquece com a assinatura da função-tag (o "-> tipo" dela)
+                    const val = contents.value || '';
+                    if (/:\s*unknown\s*```/.test(val) || /: unknown/.test(val)) {
+                        const sig = await proxy.tagCallSignatureAt(
+                            document.fileName, position.line, position.character
+                        );
+                        if (sig) md = [sig, ...md];
+                    }
                     return new vscode.Hover(md);
                 }
             }
@@ -500,6 +520,34 @@ function activate(context) {
     }, ',', '(');
 
     context.subscriptions.push(completionProvider, hoverProvider, signatureProvider);
+
+    // inlay hints: tipos de variáveis estilo rust-analyzer, cor de comentário
+    // (o VS Code pinta automático pela categoria `type`)
+    const inlayProvider = vscode.languages.registerInlayHintsProvider('dslx', {
+        async provideInlayHints(document, range) {
+            const proxy = await getProxy(document);
+            if (!proxy) return [];
+            const hints = await proxy.inlayHints(
+                document.fileName,
+                range.start.line,
+                Math.min(range.end.line + 1, document.lineCount - 1)
+            );
+            return hints
+                .filter((h) => h.line < document.lineCount)
+                .map((h) => {
+                    const kind = h.kind === 2
+                        ? vscode.InlayHintKind.Type
+                        : vscode.InlayHintKind.Parameter;
+                    const ih = new vscode.InlayHint(
+                        new vscode.Position(h.line, Math.min(h.character, document.lineAt(h.line).range.end.character)),
+                        h.label,
+                        kind
+                    );
+                    return ih;
+                });
+        },
+    });
+    context.subscriptions.push(inlayProvider);
 
     // formatação: Shift+Alt+F / "Format Document"
     const formatProvider = vscode.languages.registerDocumentFormattingEditProvider('dslx', {

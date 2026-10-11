@@ -23,6 +23,15 @@ const NAME_RE = /[A-Za-z_][\w.-]*/y;
 // < depois disso = comparação Lua, não tag (mesma guarda da grammar)
 const GUARD_BAD_BEFORE = /[\w"')\]}]/;
 
+/** preâmbulo de tipos: define `element` (a tabela que toda função-tag recebe) */
+const PREAMBLE = [
+    '---@class (partial) element',
+    '---@field name string',
+    '---@field props table<string, any>',
+    '---@field childrens any[]',
+    '',
+].join('\n') + '\n';
+
 function isWs(c) { return c === ' ' || c === '\t' || c === '\r' || c === '\n'; }
 
 /** escapa string pra literal Lua */
@@ -188,6 +197,13 @@ function parseElement(text, i) {
     return { end: p, name, kind: selfClose ? 'selfClose' : 'open', call, mappings, spansLines: countLines(text, i, p) };
 }
 
+/** offset absoluto do início da linha (0-based) */
+function lineStartOf(text, line) {
+    let pos = 0;
+    for (let i = 0; i < line; i++) pos += text.split('\n')[i].length + 1;
+    return pos;
+}
+
 /** lê um block { ... } balanceado; devolve conteúdo e end */
 function readBlock(text, i) {
     const n = text.length;
@@ -236,14 +252,78 @@ function canStartElement(text, i) {
 
 /**
  * shadow transform completo.
- * @returns {{shadow: string, problems: Array<{line, message}>}}
+ * @returns {{shadow: string, problems: Array, elements: Array,
+ *            lineMap: number[], preambleLines: number}}
+ * lineMap: lineMap[dslxLine] = linha correspondente no shadow (0-based);
+ * usado pra traduzir posições dos dois lados (preâmbulo + anotações injetadas).
  */
 function toShadow(text) {
-    const n = text.length;
+    let n = text.length;
     let out = '';
     let i = 0;
     const problems = [];
     const elements = []; // constructs transformados (pro remap de posições)
+
+    // ---- pré-scan: funções usadas como tag → recebem @param el element ----
+    const tagNames = new Set();
+    {
+        const reTag = /<([A-Za-z_][\w.-]*)/g;
+        let m;
+        while ((m = reTag.exec(text))) {
+            if (!/^<\/?const\b|^<\/?close\b/.test(m[0])) tagNames.add(m[1]);
+        }
+    }
+    // linha de declaração de cada função-componente (local function f(el) …)
+    const componentAnnLines = new Set(); // linhas dslx (0-based) que recebem anotação
+    {
+        const lines = text.split('\n');
+        for (let l = 0; l < lines.length; l++) {
+            const m = /(?:^|\s)local\s+function\s+([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)?\s*\)/.exec(lines[l])
+                || /(?:^|\s)function\s+([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)?\s*\)/.exec(lines[l]);
+            if (m && tagNames.has(m[1]) && m[2]) {
+                componentAnnLines.add(l);
+            }
+        }
+    }
+
+    // ---- pré-processa: injeta as anotações de tipo ANTES das declarações ----
+    // o resultado tem +1 linha por componente; o lineMap traduz dslx↔anotado
+    let annText = '';
+    const srcLines0 = text.split('\n');
+    let annLines = 0;
+    const injectedAt = new Map(); // linha dslx -> linha no texto anotado
+    for (let l = 0; l < srcLines0.length; l++) {
+        if (componentAnnLines.has(l)) {
+            annText += '---@param el element\n';
+            annLines++;
+        }
+        injectedAt.set(l, l + annLines);
+        annText += srcLines0[l] + (l < srcLines0.length - 1 ? '\n' : '');
+    }
+
+    // ---- mapa de linhas: dslxLine -> shadowLine (preâmbulo + anotações) ----
+    // PREAMBLE termina com \n; conteúdo começa na linha = nº de \n do preâmbulo
+    const preambleLines = (PREAMBLE.match(/\n/g) || []).length;
+    const lineMap = []; // dslx line -> shadow line
+    for (let l = 0; l < srcLines0.length; l++) {
+        lineMap[l] = preambleLines + injectedAt.get(l);
+    }
+
+    // escreve o preâmbulo e processa o texto ANOTADO
+    out += PREAMBLE;
+    text = annText;
+    i = 0;
+    const n2 = text.length;
+    n = n2;
+
+    /** linha anotada → linha dslx (mapa inverso do injectedAt; SEM preâmbulo —
+     *  o scanner roda sobre o texto anotado, que ainda não tem o preâmbulo) */
+    const backMap = new Map();
+    for (const [dslxL, annL] of injectedAt.entries()) backMap.set(annL, dslxL);
+    const lineMapBack = (annLine) => {
+        if (backMap.has(annLine)) return backMap.get(annLine);
+        return Math.max(0, annLine);
+    };
 
     while (i < n) {
         const c = text[i];
@@ -286,19 +366,31 @@ function toShadow(text) {
                 out += el.call + blanked;
 
                 // registra o elemento pra tradução de posições:
-                // - linha original do '<' (chamada vive nessa linha no shadow)
-                // - blocos mapeados (origFrom/To no dslx → callOffset/len no shadow)
+                // annStartLine/callCol medidos no texto ANOTADO;
+                // dslxStartLine = linha correspondente no dslx original
                 const startLine = countLines(text, 0, i);
                 const srcLines = text.split('\n');
                 const callCol = srcLines[startLine].indexOf('<');
+                // enriquece os mappings com linha/coluna dslx de cada bloco
+                for (const m of (el.mappings || [])) {
+                    if (m.kind === 'block') {
+                        m.annLine = countLines(text, 0, m.origFrom);
+                        m.annCol = m.origFrom - lineStartOf(text, m.annLine);
+                        const dl = lineMapBack(m.annLine);
+                        m.dslxLine = dl;
+                        m.dslxCol = m.annCol;
+                    }
+                }
                 elements.push({
-                    startLine,
+                    startLine,          // linha no espaço anotado
                     callLine: startLine,
                     callCol: callCol >= 0 ? callCol : 0,
                     mappings: el.mappings || [],
                     origTextStart: i,
                     origTextEnd: el.end,
                     callText: el.call,
+                    annStartLine: startLine,
+                    dslxStartLine: lineMapBack(startLine), // linha dslx via mapa inverso
                 });
                 i = el.end;
                 continue;
@@ -311,41 +403,33 @@ function toShadow(text) {
         out += c;
         i++;
     }
-    return { shadow: out, problems, elements };
+    return { shadow: out, problems, elements, lineMap, preambleLines };
 }
 
 /**
- * traduz posição dslx → shadow. linhas fora de construct são idênticas;
- * dentro de um construct: o nome do componente mapeia pro token da chamada
- * (linha do '<', coluna do '<'), blocos {expr} mapeiam pela tabela do elemento.
+ * traduz posição dslx → shadow (usa o lineMap do toShadow: preâmbulo+anotações).
+ * o `elements` carrega dslxStartLine + callCol + mappings no espaço anotado.
  * @returns {{line, character} | null} null = posição não mapeável
  */
-function dslxToShadowPos(text, elements, line, character) {
-    // localiza o offset absoluto no texto
-    const lines = text.split('\n');
-    let abs = 0;
-    for (let i = 0; i < line; i++) abs += lines[i].length + 1;
-    abs += character;
+function dslxToShadowPos(elements, lineMap, line, character) {
+    // linha shadow da linha dslx (preamble + anotações já contabilizados)
+    const shadowLine = (lineMap && lineMap[line] !== undefined) ? lineMap[line] : line;
 
     for (const el of elements) {
-        if (abs >= el.origTextStart && abs < el.origTextEnd) {
-            // dentro de um bloco {expr}? (testa ANTES do nome — bloco é mais específico)
+        if (line === el.dslxStartLine) {
+            // cursor sobre o nome da tag → token na chamada (col do '<')
+            if (character >= el.callCol && character < el.callCol + 1 + (el.mappings[0] ? el.mappings[0].len : 0) + 1) {
+                return { line: shadowLine, character: el.callCol };
+            }
+            // blocos {expr} da MESMA linha dslx
             for (const m of el.mappings) {
-                if (m.kind === 'block' && abs >= m.origFrom && abs < m.origTo) {
-                    const rel = countNonNewlineDiff(text, m.origFrom, abs);
-                    return { line: el.startLine, character: el.callCol + m.callOffset + rel };
+                if (m.kind === 'block' && m.dslxLine === line && character >= m.dslxCol && character < m.dslxCol + m.len) {
+                    return { line: shadowLine, character: el.callCol + m.callOffset + (character - m.dslxCol) };
                 }
             }
-            // sobre o nome da tag (logo após o '<')? → token na chamada
-            const nameAbs = el.origTextStart + 1; // depois do '<'
-            if (abs >= nameAbs && abs < nameAbs + el.mappings[0].len) {
-                return { line: el.startLine, character: el.callCol };
-            }
-            // outra parte do construct (texto/children/fechamento): não mapeável
-            return null;
         }
     }
-    return { line, character }; // fora de construct: identidade
+    return { line: shadowLine, character };
 }
 
 /** coluna (no shadow line do construct) do token do nome do componente */

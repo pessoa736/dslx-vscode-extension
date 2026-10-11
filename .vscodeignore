@@ -3,5 +3,6 @@ informações da liguagem/**
 scripts/**
 examples/**
 **/.git/**
+examples/.dslx-shadow/
 *.vsix
 node_modules/**

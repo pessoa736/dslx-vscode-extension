@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0
+
+- **tipo do retorno na variável**: funções usadas como tag ganham `---@param el element` sintético no shadow (com `---@class element` no preâmbulo), então o LuaLS infere e propaga o retorno — `local resultado = <soma peso={9}/>` mostra `local resultado: integer` no hover quando a função tem `---@return` (anotações EmmyLua escritas no próprio `.dslx` passam pro shadow e funcionam)
+- **inlay hints estilo rust-analyzer**: tipos de variáveis locais, tipos de parâmetros e labels de chamada via `textDocument/inlayHint`, com posições remapeadas pro `.dslx` — o VS Code pinta na cor de comentário automaticamente (categoria type)
+- **integração com sumneko.lua**: detecção automática do lua-language-server bundled da extensão `sumneko.lua` quando `dslx.analysis.luaLanguageServerPath` tá vazio
+- **integração com luarocks**: tree local (`lua_modules/`, `.luarocks/`) entra no `workspace.library` do `.luarc.json` — tipos dos módulos instalados resolvem nos `.dslx`
+- `.luarc.json` escrito no workspace (merge, sem sobrescrever config do usuário) com `hint.*`, `diagnostics.globals += is_element`
+- **debug console com ambiente**: o launch de debug imprime interpretador, programa, `.lua` de debug e nº de linhas mapeadas
+- **debug não polui o projeto**: o `.lua` de debug vai pra `.dslx-debug/` (gitignored) em vez de colar do lado do `.dslx`
+- hover enriquecido: hover fraco (`unknown`) numa var que recebe tag mostra a assinatura da função-tag junto
+- correções de mapeamento: off-by-one do preâmbulo do shadow, linha de construct via lineMap, `preambleLines` contado por newlines
+
 ## 0.4.0
 
 - **hover com lua-language-server de verdade**: middleware LSP (`src/lsp.js`) que abre o `.dslx` pro LuaLS via **shadow transform** (`src/shadow.js`) — o construct `<card titulo="olá">` vira a chamada `card{name="card", props={titulo="olá"}, childrens={...}}` nas MESMAS posições, então hover, diagnósticos e completion voltam com tipo inferido real (`local total <const>: integer = 0`) e mapeados 1:1 pro `.dslx`; blocos `{expr}` mapeiam por tabela de offsets

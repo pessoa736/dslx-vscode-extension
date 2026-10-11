@@ -126,10 +126,15 @@ function onEngineLine(line) {
 
 // ---------- helpers ----------
 
-/** compila o .dslx no .lua correspondente (ou usa .lua direto) */
+/** compila o .dslx pra um .lua de DEBUG dedicado (não polui o projeto):
+ *  <arquivo>.dslx → .dslx-debug/<arquivo>.lua  — ou usa .lua direto */
 function prepareProgram() {
     if (launch.program.endsWith('.dslx')) {
-        const r = spawnSync(launch.interpreter, [RUNNER, 'compile', dslxPath], {
+        const dbgDir = path.join(path.dirname(dslxPath), '.dslx-debug');
+        fs.mkdirSync(dbgDir, { recursive: true });
+        const stem = path.basename(dslxPath).replace(/\.dslx$/i, '');
+        const genPath = path.join(dbgDir, stem + '.lua');
+        const r = spawnSync(launch.interpreter, [RUNNER, 'compile', dslxPath, dbgDir], {
             cwd: path.dirname(dslxPath),
             encoding: 'utf8',
             env: childEnv(),
@@ -138,6 +143,23 @@ function prepareProgram() {
             event('output', { category: 'stderr', output: (r.stderr || r.stdout || 'falhou a compilação') + '\n' });
             event('terminated');
             return false;
+        }
+        // a engine agora aponta pro .lua de debug, não pro .lua do projeto
+        luaPath = genPath;
+        // mapa de linhas contra o .lua de debug
+        try {
+            const src = fs.readFileSync(dslxPath, 'utf8');
+            const gen = fs.readFileSync(genPath, 'utf8');
+            map = alignLines(src, gen);
+            rev = buildReverse(map);
+        } catch (_) { map = []; rev = {}; }
+
+        // cabeçalho de ambiente no Debug Console
+        event('output', { category: 'console', output: `DSLX debug — interpretador: ${launch.interpreter}\n` });
+        event('output', { category: 'console', output: `  programa: ${dslxPath}\n  lua de debug: ${genPath}\n  (${map.filter((m) => m > 0).length} linhas mapeadas dslx→lua)\n` });
+        const envNote = Object.entries(launch.env || {});
+        if (envNote.length) {
+            event('output', { category: 'console', output: `  env extra: ${envNote.map(([k, v]) => `${k}=${v}`).join(' ')}\n` });
         }
     }
     return true;
@@ -192,16 +214,18 @@ function handleDap(req) {
             bpFile = path.join(os.tmpdir(), `dslx-bp-${process.pid}.json`);
 
             if (!prepareProgram()) { respond(req); return; }
-
-            // mapa de linhas
-            try {
-                const src = fs.readFileSync(dslxPath.endsWith('.dslx') ? dslxPath : null, 'utf8');
-                const gen = fs.readFileSync(luaPath, 'utf8');
-                map = alignLines(src, gen);
-                rev = buildReverse(map);
-            } catch (_) {
-                map = [];
-                rev = {};
+            // o mapa de linhas é calculado pelo prepareProgram (contra o .lua de
+            // debug); só recalcula se depurar .lua direto
+            if (!launch.program.endsWith('.dslx')) {
+                try {
+                    const src = fs.readFileSync(dslxPath, 'utf8');
+                    const gen = fs.readFileSync(luaPath, 'utf8');
+                    map = alignLines(src, gen);
+                    rev = buildReverse(map);
+                } catch (_) {
+                    map = [];
+                    rev = {};
+                }
             }
 
             respond(req);
