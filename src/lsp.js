@@ -258,13 +258,19 @@ class LspProxy {
     async inlayHints(dslxPath, startLine, endLine) {
         const doc = this.docs.get(dslxPath);
         if (!doc) return [];
-        const s = this._pos(dslxPath, startLine, 0);
-        const e = this._pos(dslxPath, endLine, 0);
+        const totalLines = (doc.origText.split('\n')).length - 1;
+        const sLine = Math.max(0, Math.min(startLine, totalLines));
+        const eLine = Math.max(0, Math.min(endLine, totalLines));
+        const s = this._pos(dslxPath, sLine, 0);
+        const e = this._pos(dslxPath, eLine, Number.MAX_SAFE_INTEGER);
+        // _pos com character gigante pode retornar posição inválida; garante
+        // que o range cobre até o fim da linha endLine no shadow
+        const eFixed = this._pos(dslxPath, eLine, 0);
         const r = await this._request('textDocument/inlayHint', {
             textDocument: { uri: this.shadowUri(dslxPath) },
             range: {
                 start: s,
-                end: e || { line: endLine, character: 0 },
+                end: { line: eFixed.line + (eLine === totalLines ? 1 : 0), character: 0 },
             },
         });
         const hints = r && r.result;
@@ -300,6 +306,51 @@ class LspProxy {
                 kind: h.kind,
                 tooltip: h.tooltip && h.tooltip.contents ? h.tooltip.contents.value : undefined,
             });
+        }
+
+        // ---- hints sintéticos nos constructs XML ----
+        // para cada tag no range: (1) tipo do retorno da função-tag ancorado
+        // no fim do construct; (2) tipo de cada prop recebida, ancorado na prop
+        for (const el of (doc.elements || [])) {
+            if (el.dslxStartLine < sLine || el.dslxStartLine > eLine) continue;
+            // assinatura da função-tag: hover na posição do token
+            const sigPos = this._pos(dslxPath, el.dslxStartLine, el.callCol + 1);
+            const sig = await this._request('textDocument/hover', {
+                textDocument: { uri: this.shadowUri(dslxPath) },
+                position: sigPos,
+            });
+            const sigVal = sig && sig.result && sig.result.contents && sig.result.contents.value;
+            const retM = sigVal ? /->\s*(.+?)(?:\n|$)/.exec(sigVal) : null;
+            const retType = retM ? retM[1].trim().replace(/\s+/g, ' ') : null;
+
+            // (1) hint de retorno: fim da 1ª linha do construct (tags
+            // multi-linha ancoram ali; o tipo é do retorno da função-tag)
+            const origLines = doc.origText.split('\n');
+            const cLine = origLines[el.dslxStartLine] || '';
+            if (retType && retType !== 'unknown') {
+                out.push({
+                    line: el.dslxStartLine,
+                    character: cLine.length,
+                    label: `→ ${retType}`,
+                    kind: 1,
+                    tooltip: sigVal,
+                    synthetic: true,
+                });
+            }
+
+            // (2) hints de props: `: tipo` após cada prop recebida no XML
+            for (const pi of (el.propInfos || [])) {
+                if (pi.dslxLine < sLine || pi.dslxLine > eLine) continue;
+                const tipo = pi.declared || { string: 'string', expr: 'any', bool: 'boolean' }[pi.inferred];
+                if (!tipo) continue;
+                out.push({
+                    line: pi.dslxLine,
+                    character: pi.dslxEndCol,
+                    label: `: ${tipo}`,
+                    kind: 1,
+                    synthetic: true,
+                });
+            }
         }
         return out;
     }

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.0
+
+- **hints nos constructs XML**: as tags agora mostram visualmente o que recebem e o que retornam — `→ string` no fim do construct (retorno da função-tag, com tooltip da assinatura completa), e `: tipo` após cada prop (`titulo: string`, `largura: any`, `destaque: boolean`), ancorados na posição exata de cada prop no XML
+- **fix: inlay hints sombrios**: o range do request pro LuaLS truncava quando `endLine` passava do fim do arquivo (o fallback de linha devolvia posição ANES dos hints) — hints normais (`: integer` em vars, `: element` em params) voltam pra todos os lugares
+- hints sintéticos (retorno/props) são marcados `synthetic` e o extension.js pinta como `InlayHintKind.Type` — mesma cor de comentário do tema
+
+## 0.6.2
+
+- **cores das anotações emmylua**: comando `DSLX: Aplicar cores nas anotações de tipo` — injeta `tokenColorCustomizations` no settings do usuário (merge, reversível) pintando `@param`/`@return`/`@class`, tipos e nomes; detecta temas Monokai (que não pintam esses escopos) e oferece na primeira abertura de `.dslx`
+- grammar emite os escopos corretos (`storage.type.annotation.lua`, `support.type.lua`, `support.class.lua`, `entity.name.variable.lua`) — validado no engine vscode-textmate
+
+## 0.6.1
+
+- **fix: anotações emmylua do usuário aparecem de verdade**: `---@param el element` é REESCRITO no shadow com o tipo enriquecido da tag (props tipadas), preservando doc comments e `@return`; classe própria (`@param el CardOpts`) fica intocada; ordem da injeção do `@param` sintético corrigida (vinha depois da declaração)
+
 ## 0.6.0
 
 - **machine-agnostic**: nenhum path fixo de máquina — o resolvedor de lua-language-server (`src/servermanager.js`) usa config → storage da extensão → PATH → binário bundled de qualquer extensão instalada → **auto-download da release oficial** (com consentimento, pro globalStorage da DSLX; nada é instalado no sistema)

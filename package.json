@@ -2,7 +2,7 @@
 	"name": "dslx",
 	"displayName": "DSLX — Davi System Lua-XML",
 	"description": "Suporte à linguagem DSLX (Lua + XML estilo JSX): highlight, snippets, diagnóstico de erros, lua-language-server, compilação, execução e debugger.",
-	"version": "0.6.2",
+	"version": "0.7.0",
 	"publisher": "pessoa736",
 	"license": "MIT",
 	"icon": "./icon.png",

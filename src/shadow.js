@@ -69,6 +69,7 @@ function parseElement(text, i) {
     // props
     const props = [];
     const blocks = []; // blocos {expr} com posição original (pro remap de colunas)
+    const propInfos = []; // {name, from, to, type} de cada prop (pra hints no construct)
     let sawProp = false;
     for (;;) {
         const wsStart = p;
@@ -81,6 +82,7 @@ function parseElement(text, i) {
         const pn = NAME_RE.exec(text);
         if (!pn || pn.index !== p) return null; // sintaxe não reconhecida → aborta
         const pname = pn[0];
+        const pnameFrom = p; // posição absoluta do nome da prop (pra hints)
         p += pn[0].length;
         const pwsStart = p;
         while (p < n && isWs(text[p])) p++;
@@ -95,12 +97,14 @@ function parseElement(text, i) {
                 if (p >= n) return { unterminated: true };
                 p++; // fecha aspa
                 props.push(`${pname}=${luaQuote(val)}`);
+                propInfos.push({ name: pname, from: pnameFrom, to: p, type: 'string' });
             } else if (q === '{') {
                 // block {expr} — captura balanceado
                 const blk = readBlock(text, p);
                 if (!blk) return { unterminated: true };
                 props.push(`${pname}=${blk.content}`);
                 blocks.push({ content: blk.content, origFrom: p + 1, origTo: blk.end - 1 });
+                propInfos.push({ name: pname, from: pnameFrom, to: blk.end, type: 'expr' });
                 p = blk.end;
             } else {
                 return null;
@@ -109,6 +113,7 @@ function parseElement(text, i) {
         } else {
             // prop booleana (bare) — o parser aceita nome solto
             props.push(`${pname}=true`);
+            propInfos.push({ name: pname, from: pnameFrom, to: p, type: 'bool' });
             sawProp = true;
             p -= 0; // p já aponta depois do nome
         }
@@ -194,7 +199,7 @@ function parseElement(text, i) {
         }
     }
 
-    return { end: p, name, kind: selfClose ? 'selfClose' : 'open', call, mappings, spansLines: countLines(text, i, p) };
+    return { end: p, name, kind: selfClose ? 'selfClose' : 'open', call, mappings, propInfos, spansLines: countLines(text, i, p) };
 }
 
 /** offset absoluto do início da linha (0-based) */
@@ -479,11 +484,31 @@ function toShadow(text) {
                         m.dslxCol = m.annCol;
                     }
                 }
+                // props do construct com linha/col dslx (pra hints no XML):
+                // tipo vem do tagProps (scan de todos os usos da tag)
+                const tagPropTypes = tagProps.get(el.name) || new Map();
+                const propInfos = (el.propInfos || []).map((pi) => {
+                    const annLineP = countLines(text, 0, pi.from);
+                    const annColP = pi.from - lineStartOf(text, annLineP);
+                    const endColP = pi.to - lineStartOf(text, annLineP);
+                    const dlP = lineMapBack(annLineP);
+                    const declaredType = tagPropTypes.get(pi.name);
+                    return {
+                        name: pi.name,
+                        dslxLine: dlP,
+                        dslxCol: annColP,
+                        dslxEndCol: endColP,
+                        inferred: pi.type,       // string|expr|bool (sintático)
+                        declared: declaredType || null, // string|any|boolean (do scan)
+                    };
+                });
                 elements.push({
                     startLine,          // linha no espaço anotado
                     callLine: startLine,
                     callCol: callCol >= 0 ? callCol : 0,
                     mappings: el.mappings || [],
+                    propInfos,
+                    oneLine: (el.spansLines || 0) === 0,
                     origTextStart: i,
                     origTextEnd: el.end,
                     callText: el.call,
