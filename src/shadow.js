@@ -273,15 +273,73 @@ function toShadow(text) {
             if (!/^<\/?const\b|^<\/?close\b/.test(m[0])) tagNames.add(m[1]);
         }
     }
+
+    // ---- pré-scan: props usadas em cada tag → geram @class <tag>_props ----
+    // tipos inferidos dos usos: "str" → string, {expr} → tipo do expr (any),
+    // bare → boolean. o @class tipa el.props.<nome> no LuaLS
+    const tagProps = new Map(); // tag -> Map(prop -> 'string'|'any'|'boolean')
+    {
+        const reUse = /<([A-Za-z_][\w.-]*)([^<>]*?)(\/>|>)/g;
+        let m;
+        while ((m = reUse.exec(text))) {
+            const tag = m[1];
+            const attrs = m[2];
+            if (!tagProps.has(tag)) tagProps.set(tag, new Map());
+            const props = tagProps.get(tag);
+            const reAttr = /([A-Za-z_][\w.-]*)\s*=\s*(?:"[^"]*"|'[^']*'|\{[^{}]*\})/g;
+            let a;
+            const used = new Set();
+            while ((a = reAttr.exec(attrs))) {
+                used.add(a[1]);
+                const val = a[0].split('=')[1].trim();
+                const type = val.startsWith('"') || val.startsWith("'") ? 'string'
+                    : val.startsWith('{') ? 'any' : 'boolean';
+                props.set(a[1], type);
+            }
+            // props booleanas (nome solto)
+            const rest = attrs.replace(reAttr, ' ');
+            for (const tok of rest.split(/\s+/)) {
+                if (/^[A-Za-z_][\w.-]*$/.test(tok) && !used.has(tok)) props.set(tok, 'boolean');
+            }
+        }
+    }
+
+    // preâmbulo extendido: @class element + @class por tag com props tipadas.
+    // TERMINA com linha em branco: @class colado num comentário --- acima de
+    // função faz o LuaLS tratar a função como CONSTRUTOR da classe (mata o @return)
+    let preamble = PREAMBLE;
+    for (const [tag, props] of tagProps) {
+        if (!props.size) continue;
+        preamble += `---@class ${tag}_props\n`;
+        for (const [pname, ptype] of props) {
+            preamble += `---@field ${pname} ${ptype}\n`;
+        }
+    }
+    preamble += '\n';
+    const PREAMBLE_DYNAMIC = preamble;
+
     // linha de declaração de cada função-componente (local function f(el) …)
-    const componentAnnLines = new Set(); // linhas dslx (0-based) que recebem anotação
+    // + se o usuário JÁ anotou @param/@return, não injetamos nada (as
+    // anotações dele ganham; a injecção dupla quebra a inferência do LuaLS)
+    const componentAnnLines = new Map(); // linha dslx -> @param sintético | null
     {
         const lines = text.split('\n');
+        // pega o bloco de comentários --- acima de cada declaração
+        const hasOwnParam = (declLine) => {
+            for (let k = declLine - 1; k >= 0; k--) {
+                const l = lines[k].trim();
+                if (l === '') continue;
+                if (l.startsWith('---@param')) return true;
+                if (l.startsWith('---') || l.startsWith('--')) continue;
+                return false; // comentário comum, não emmylua
+            }
+            return false;
+        };
         for (let l = 0; l < lines.length; l++) {
             const m = /(?:^|\s)local\s+function\s+([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)?\s*\)/.exec(lines[l])
                 || /(?:^|\s)function\s+([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*)?\s*\)/.exec(lines[l]);
             if (m && tagNames.has(m[1]) && m[2]) {
-                componentAnnLines.add(l);
+                componentAnnLines.set(l, hasOwnParam(l) ? null : true);
             }
         }
     }
@@ -293,8 +351,15 @@ function toShadow(text) {
     let annLines = 0;
     const injectedAt = new Map(); // linha dslx -> linha no texto anotado
     for (let l = 0; l < srcLines0.length; l++) {
-        if (componentAnnLines.has(l)) {
-            annText += '---@param el element\n';
+        if (componentAnnLines.get(l) === true) {
+            // @param com tipo DEDICADO da tag, só quando o usuário não anotou
+            const mDecl = /(?:^|\s)(?:local\s+)?function\s+([A-Za-z_]\w*)\s*\(/.exec(srcLines0[l]);
+            const tag = mDecl ? mDecl[1] : null;
+            const propsClass = tag && tagProps.has(tag) ? `${tag}_props` : '';
+            const paramType = propsClass
+                ? `{name:string, props:${propsClass}, childrens:any[]}`
+                : 'element';
+            annText += `---@param el ${paramType}\n`;
             annLines++;
         }
         injectedAt.set(l, l + annLines);
@@ -303,14 +368,14 @@ function toShadow(text) {
 
     // ---- mapa de linhas: dslxLine -> shadowLine (preâmbulo + anotações) ----
     // PREAMBLE termina com \n; conteúdo começa na linha = nº de \n do preâmbulo
-    const preambleLines = (PREAMBLE.match(/\n/g) || []).length;
+    const preambleLines = (PREAMBLE_DYNAMIC.match(/\n/g) || []).length;
     const lineMap = []; // dslx line -> shadow line
     for (let l = 0; l < srcLines0.length; l++) {
         lineMap[l] = preambleLines + injectedAt.get(l);
     }
 
     // escreve o preâmbulo e processa o texto ANOTADO
-    out += PREAMBLE;
+    out += PREAMBLE_DYNAMIC;
     text = annText;
     i = 0;
     const n2 = text.length;

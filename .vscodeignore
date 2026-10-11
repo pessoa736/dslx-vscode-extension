@@ -1,8 +1,11 @@
 .vscode/**
+.vscodeignore
+.gitignore
+.git/**
 informações da liguagem/**
 scripts/**
 examples/**
-**/.git/**
-examples/.dslx-shadow/
-*.vsix
+**/.dslx-shadow/**
+**/.dslx-debug/**
+**/*.vsix
 node_modules/**

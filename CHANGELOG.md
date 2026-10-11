@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0
+
+- **machine-agnostic**: nenhum path fixo de máquina — o resolvedor de lua-language-server (`src/servermanager.js`) usa config → storage da extensão → PATH → binário bundled de qualquer extensão instalada → **auto-download da release oficial** (com consentimento, pro globalStorage da DSLX; nada é instalado no sistema)
+- **zero-setup**: highlight, snippets, compile, run, check, formatter, debugger e autocomplete básico funcionam só com um Lua 5.4+ (LuLPeg embutido). hover com tipos, diagnósticos semânticos e inlay hints usam o LuaLS — se não tiver, a extensão oferece baixar em 1 clique
+- **props tipadas nos elements**: pré-scan dos usos de cada tag gera `---@class <tag>_props` com o tipo de cada prop (`titulo="x"` → string, `{expr}` → tipo, bare → boolean); o `@param` sintético da função-tag recebe `{name, props:<tag>_props, childrens}` — hover em `el.props.titulo` mostra `(field) card_props.titulo: string`
+- **fix: tipo por cima do nome do element** — inlay hints de parâmetro (`el:`) em linha de construct são descartados (não existem na sintaxe XML); hints dentro do construct também; só hints antes do `<` mapeiam
+- **fix: regressão do @return** — `@param` sintético não é mais injetado quando a função já tem anotações EmmyLua próprias (duplicado quebrava a inferência do `@return` do usuário)
+- limpeza: caches `.dslx-shadow/`, `hello.lua` gerado e `.vscode/` fora do repo; `.vscodeignore` atualizado
+- hover da tag sem anotação própria agora mostra assinatura completa com o tipo do element e retorno inferido
+
 ## 0.5.0
 
 - **tipo do retorno na variável**: funções usadas como tag ganham `---@param el element` sintético no shadow (com `---@class element` no preâmbulo), então o LuaLS infere e propaga o retorno — `local resultado = <soma peso={9}/>` mostra `local resultado: integer` no hover quando a função tem `---@return` (anotações EmmyLua escritas no próprio `.dslx` passam pro shadow e funcionam)

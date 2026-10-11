@@ -18,6 +18,7 @@ const { alignLines } = require('./linemap');
 const { computeSuggestions, scanSymbols, LUA_GLOBALS } = require('./completion');
 const { LspProxy } = require('./lsp');
 const { formatDslx } = require('./formatter');
+const servermgr = require('./servermanager');
 
 function activate(context) {
     const runner = path.join(context.extensionPath, 'runtime', 'dslx_runner.lua');
@@ -116,35 +117,63 @@ function activate(context) {
 
     // ---------- lua-language-server (proxy LSP vivo) ----------
 
-    let lualsCache = null; // true/false/null (não testado ainda)
+    let lualsCache = null; // {path, source} | null (não resolvido ainda)
+    let lualsResolvePromise = null;
     let lspProxy = null;
     let lspStarting = null;
 
-    function luaLanguageServerPath() {
-        const configured = cfg().get('analysis.luaLanguageServerPath', '');
-        if (configured) return configured;
-        // fallback: LuaLS bundled da extensão sumneko.lua, se instalada
-        const bundled = path.join(os.homedir(), '.vscode/extensions');
-        try {
-            const dirs = fs.readdirSync(bundled).filter((d) => /^sumneko\.lua-/.test(d)).sort();
-            const last = dirs[dirs.length - 1];
-            if (last) {
-                const cand = path.join(bundled, last, 'server/bin/lua-language-server');
-                if (fs.existsSync(cand)) return cand;
+    /** resolve o binário: config → storage → PATH → extensões instaladas.
+     *  se não achar e o usuário permitir, baixa da release oficial pro
+     *  globalStorage da DSLX (nada é instalado no sistema dele) */
+    function resolveLuaLS() {
+        if (lualsCache) return Promise.resolve(lualsCache);
+        if (lualsResolvePromise) return lualsResolvePromise;
+
+        lualsResolvePromise = (async () => {
+            const configured = cfg().get('analysis.luaLanguageServerPath', '');
+            const found = servermgr.resolveServer(vscode, {
+                luaLanguageServerPath: configured,
+            });
+            if (found) {
+                lualsCache = found;
+                return found;
             }
-        } catch (_) {}
-        return 'lua-language-server';
+
+            // não achamos nada: oferece o download (uma vez por sessão)
+            const download = await vscode.window.showInformationMessage(
+                'DSLX: o lua-language-server não foi encontrado. Quer baixar a versão oficial (~25 MB, só no storage da extensão)? Isso habilita hover com tipos, diagnósticos semânticos e inlay hints.',
+                'Baixar', 'Agora não'
+            );
+            if (download === 'Baixar') {
+                try {
+                    const bin = await vscode.window.withProgress(
+                        { location: vscode.ProgressLocation.Notification, cancellable: false },
+                        (progress) => new Promise((resolve, reject) => {
+                            servermgr.downloadServer(vscode, (frac) => {
+                                progress.report({ message: `baixando lua-language-server… ${(frac * 100).toFixed(0)}%` });
+                            }).then(resolve).catch(reject);
+                        })
+                    );
+                    lualsCache = { path: bin, source: 'downloaded' };
+                    channel.appendLine(`LuaLS ${servermgr.LUALS_VERSION} baixado em ${bin}`);
+                    return lualsCache;
+                } catch (e) {
+                    channel.appendLine('download do LuaLS falhou: ' + e.message);
+                    vscode.window.showWarningMessage('DSLX: falhou o download do lua-language-server — a extensão funciona sem ele (parser, debugger, completion básico), só sem tipos semânticos.');
+                }
+            }
+            lualsCache = null;
+            return null;
+        })();
+        return lualsResolvePromise;
     }
 
     function hasLuaLS() {
-        if (lualsCache !== null) return lualsCache;
-        try {
-            const r = spawnSync(luaLanguageServerPath(), ['--version'], { encoding: 'utf8' });
-            lualsCache = !r.error;
-        } catch (_) {
-            lualsCache = false;
-        }
-        return lualsCache;
+        return resolveLuaLS().then((r) => !!r);
+    }
+
+    function luaLanguageServerPath() {
+        return lualsCache ? lualsCache.path : 'lua-language-server';
     }
 
     /** severidade LSP → VS Code */
@@ -157,48 +186,55 @@ function activate(context) {
 
     /** sobe (uma vez) o proxy LuaLS e abre o doc; devolve o proxy ou null */
     function getProxy(doc) {
-        if (!cfg().get('analysis.useLuaLanguageServer', true) || !hasLuaLS()) return Promise.resolve(null);
+        if (!cfg().get('analysis.useLuaLanguageServer', true)) return Promise.resolve(null);
         if (lspProxy && lspProxy.ready) {
             if (!lspProxy.docs.has(doc.fileName)) lspProxy.openDoc(doc.fileName, doc.getText());
             return Promise.resolve(lspProxy);
         }
         if (lspStarting) return lspStarting.then(() => getProxy(doc));
 
-        const wsFolder = vscode.workspace.getWorkspaceFolder(doc.uri);
-        lspStarting = new Promise((resolve) => {
-            const p = new LspProxy({
-                serverPath: luaLanguageServerPath(),
-                rootUri: wsFolder ? wsFolder.uri.toString() : 'file://' + path.dirname(doc.fileName),
-                log: (m) => channel.appendLine(m),
-                onDiagnostics: (dslxUri, list) => {
-                    const uri = vscode.Uri.parse(dslxUri);
-                    const ds = list.map((dg) => {
-                        const d = new vscode.Diagnostic(
-                            new vscode.Range(
-                                dg.range.start.line, dg.range.start.character,
-                                dg.range.end.line, dg.range.end.character
-                            ),
-                            dg.message,
-                            LSP_SEV[dg.severity] || vscode.DiagnosticSeverity.Warning
-                        );
-                        d.source = 'lua-language-server';
-                        if (dg.code) d.code = dg.code;
-                        return d;
-                    });
-                    // merge com os diagnósticos do parser dslx (se houver)
-                    const existing = diagnostics.get(uri);
-                    const parserDs = (existing || []).filter((d) => d.source === 'dslx');
-                    diagnostics.set(uri, [...parserDs, ...ds]);
-                },
+        // resolve o binário primeiro (pode baixar na primeira vez)
+        lspStarting = resolveLuaLS().then((found) => {
+            if (!found) return null;
+
+            const startPromise = new Promise((resolve) => {
+                const wsFolder = vscode.workspace.getWorkspaceFolder(doc.uri);
+                const p = new LspProxy({
+                    serverPath: found.path,
+                    rootUri: wsFolder ? wsFolder.uri.toString() : 'file://' + path.dirname(doc.fileName),
+                    log: (m) => channel.appendLine(m),
+                    onDiagnostics: (dslxUri, list) => {
+                        const uri = vscode.Uri.parse(dslxUri);
+                        const ds = list.map((dg) => {
+                            const d = new vscode.Diagnostic(
+                                new vscode.Range(
+                                    dg.range.start.line, dg.range.start.character,
+                                    dg.range.end.line, dg.range.end.character
+                                ),
+                                dg.message,
+                                LSP_SEV[dg.severity] || vscode.DiagnosticSeverity.Warning
+                            );
+                            d.source = 'lua-language-server';
+                            if (dg.code) d.code = dg.code;
+                            return d;
+                        });
+                        // merge com os diagnósticos do parser dslx (se houver)
+                        const existing = diagnostics.get(uri);
+                        const parserDs = (existing || []).filter((d) => d.source === 'dslx');
+                        diagnostics.set(uri, [...parserDs, ...ds]);
+                    },
+                });
+                p.start().then(() => {
+                    lspProxy = p;
+                    resolve(p);
+                }).catch((e) => {
+                    channel.appendLine('LuaLS falhou: ' + e.message);
+                    resolve(null);
+                });
             });
-            p.start().then(() => {
-                lspProxy = p;
-                resolve(p);
-            }).catch((e) => {
-                channel.appendLine('LuaLS falhou: ' + e.message);
-                resolve(null);
-            });
-        });
+            return startPromise;
+        }).catch(() => null);
+
         return lspStarting.then(() => getProxy(doc));
     }
 
@@ -217,7 +253,8 @@ function activate(context) {
 
     /** análise de um arquivo por demanda (comando analizar): parser + push do LuaLS */
     async function lualsCheck(file, add) {
-        if (!cfg().get('analysis.useLuaLanguageServer', true) || !hasLuaLS()) return;
+        if (!cfg().get('analysis.useLuaLanguageServer', true)) return;
+        if (!(await hasLuaLS())) return;
         // o proxy vivo publica diagnósticos via onDiagnostics; aqui só garantimos
         // que o doc tá aberto (o analyze explícito reabre pra forçar)
         const doc = vscode.workspace.textDocuments.find((d) => d.fileName === file);
@@ -285,7 +322,7 @@ function activate(context) {
             progress.report({ message: `analisando ${path.basename(file)}…` });
             const { count } = await analyze(file, true);
             if (count === 0) {
-                if (cfg().get('analysis.useLuaLanguageServer', true) && !hasLuaLS()) {
+                if (cfg().get('analysis.useLuaLanguageServer', true) && !(await hasLuaLS())) {
                     vscode.window.showWarningMessage('DSLX: sem erros — mas o lua-language-server não foi encontrado (veja dslx.analysis.luaLanguageServerPath).');
                 } else {
                     vscode.window.showInformationMessage('DSLX: nenhum problema encontrado.');

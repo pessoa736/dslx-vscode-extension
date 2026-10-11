@@ -243,12 +243,14 @@ class LspProxy {
         return p || { line, character };
     }
 
-    /** posição shadow → dslx (reverse do lineMap; usada pros inlay hints) */
+    /** posição shadow → dslx (reverse do lineMap; usada pros inlay hints).
+     *  linhas shadow sem mapeamento (preâmbulo, anotações injetadas) → null:
+     *  hint de lá é descartado, nunca aparece flutuando acima do código */
     _posBack(dslxPath, line, character) {
         const doc = this.docs.get(dslxPath);
-        if (!doc || !doc.lineMap) return { line, character };
+        if (!doc || !doc.lineMap) return null;
         const idx = doc.lineMap.indexOf(line);
-        if (idx === -1) return { line, character };
+        if (idx === -1) return null;
         return { line: idx, character };
     }
 
@@ -267,20 +269,39 @@ class LspProxy {
         });
         const hints = r && r.result;
         if (!Array.isArray(hints)) return [];
-        // traduz posição de volta pro dslx e devolve no formato interno
-        return hints.map((h) => {
+        // traduz posição de volta pro dslx e devolve no formato interno.
+        //  - hints em linhas sem mapeamento (preâmbulo/anotações) → descartados
+        //  - hints de PARÂMETRO (kind 2) em linha de construct → descartados
+        //    (a sintaxe XML não mostra parâmetro; o hint "el:" ficaria
+        //    flutuando em cima do nome da tag)
+        //  - hints de TIPO em linha de construct: só os que caem ANTES do '<'
+        //    (ex.: `: integer` depois de `local resultado =`) — os de dentro
+        //    do construct não têm posição equivalente no dslx
+        const constructLines = new Map(); // dslxLine -> callCol
+        for (const el of (doc.elements || [])) {
+            constructLines.set(el.dslxStartLine, el.callCol);
+        }
+        const out = [];
+        for (const h of hints) {
             const back = this._posBack(dslxPath, h.position.line, h.position.character);
+            if (!back) continue;
+            const callCol = constructLines.get(back.line);
+            if (callCol !== undefined) {
+                if (h.kind === 2) continue; // hint de parâmetro no construct → fora
+                if (back.character > callCol) continue; // dentro do construct → fora
+            }
             const label = typeof h.label === 'string'
                 ? h.label
                 : (h.label || []).map((v) => v.value).join('');
-            return {
+            out.push({
                 line: back.line,
                 character: back.character,
                 label,
                 kind: h.kind,
                 tooltip: h.tooltip && h.tooltip.contents ? h.tooltip.contents.value : undefined,
-            };
-        });
+            });
+        }
+        return out;
     }
 
     /** assinatura da função-tag chamada na linha dslx (pra enriquecer hover) */

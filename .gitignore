@@ -43,6 +43,8 @@ informações da liguagem/
 
 # extensão vs code
 *.vsix
-node_modules/.dslx-shadow/
+node_modules/
+.vscode/
+.dslx-shadow/
 .dslx-debug/
 .luarc.json
