@@ -490,6 +490,11 @@ function activate(context) {
 
     const completionProvider = vscode.languages.registerCompletionItemProvider('dslx', {
         async provideCompletionItems(document, position) {
+            // ---- contexto: dentro de comentário ---/---@? ----
+            // emmylua-land: só as anotações do LuaLS valem (param/return/class…)
+            const lineText = document.lineAt(position.line).text.slice(0, position.character);
+            const inDocComment = /^\s*---/.test(lineText);
+
             // 1. sugestões semânticas do LuaLS (via shadow — escopo real)
             const lualsItems = [];
             const proxy = await getProxy(document);
@@ -498,7 +503,25 @@ function activate(context) {
                 const items = r && r.result && (r.result.items || r.result);
                 if (Array.isArray(items)) {
                     for (const it of items) {
-                        // só símbolos (functions/vars/fields); keywords/snippets ficam com o engine local
+                        if (inDocComment) {
+                            // em comentário: keywords de anotação (kind 23) +
+                            // classes/tipos conhecidos — nada de snippet de código
+                            if (it.kind === 15) continue; // snippet do LSP fora
+                            const item = new vscode.CompletionItem(
+                                it.label,
+                                it.kind === 23 ? vscode.CompletionItemKind.Keyword : undefined
+                            );
+                            if (it.detail) item.detail = String(it.detail);
+                            if (it.documentation) {
+                                item.documentation = it.documentation.value
+                                    ? it.documentation.value
+                                    : String(it.documentation);
+                            }
+                            lualsItems.push(item);
+                            continue;
+                        }
+                        // código normal: só símbolos (functions/vars/fields);
+                        // keywords/snippets ficam com o engine local
                         if (it.kind === 14 || it.kind === 15) continue; // Keyword / Snippet do LSP
                         const item = new vscode.CompletionItem(
                             it.label,
@@ -511,9 +534,25 @@ function activate(context) {
                                 ? it.documentation.value
                                 : String(it.documentation);
                         }
+                        // prioriza o semântico (escopo real) sobre o heurístico
+                        item.sortText = '0' + it.label;
                         lualsItems.push(item);
                     }
                 }
+            }
+
+            // comentário emmylua: devolve SÓ as anotações — sem ruído do
+            // engine local (tags/vars/keywords de código não fazem sentido ali)
+            if (inDocComment) {
+                if (lualsItems.length) return lualsItems;
+                // fallback offline: anotações emmylua padrão
+                return ['param', 'return', 'class', 'field', 'type', 'alias', 'generic',
+                    'vararg', 'overload', 'deprecated', 'see', 'diagnostic', 'module',
+                    'meta', 'version'].map((a) => {
+                    const it = new vscode.CompletionItem(a, vscode.CompletionItemKind.Keyword);
+                    it.detail = 'anotação emmylua';
+                    return it;
+                });
             }
 
             // 2. engine contextual local (tags, props, guards de declaração…)
@@ -531,7 +570,7 @@ function activate(context) {
 
             return [...lualsItems, ...localItems.filter((i) => !seen.has(i.label))];
         },
-    }, '.', '{', '<', ' ', '@');
+    }, '.', '{', '<', ' ', '@', '-');
 
     // hover: lua-language-server primeiro (tipos inferidos, doc comments),
     // fallback pro scanner local

@@ -2,6 +2,7 @@
 
 
 -- props: string, expressão e boolean; children: texto, expressão e elemento aninhado
+---@
 ---@type fun(el: table<string, any>):string
 local function card(el)
     local props <const> = el.props
@@ -17,6 +18,7 @@ local c1 =
     <card 
         titulo="olá" 
         largura={10} 
+        tw={1}
         destaque
     >
         texto
